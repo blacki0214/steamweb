@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -24,3 +24,6 @@ Thumbs.db
 
 # Skills
 .agents/skills/*/SKILL.md
+
+# Assets
+assets/App_des/
