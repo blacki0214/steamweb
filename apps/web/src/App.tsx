@@ -1,24 +1,18 @@
-﻿import { Link, Route, Routes } from "react-router-dom";
-
-function DashboardPage() {
-  return <div>Trending indie games will appear here.</div>;
-}
+import { Route, Routes } from "react-router-dom";
+import { MainLayout } from "./components/layout/MainLayout";
+import { DiscoveryHome } from "./pages/DiscoveryHome/DiscoveryHome";
 
 function GameDetailPage() {
-  return <div>Game detail layout with video and sentiment summary.</div>;
+  return <div className="p-8 text-on-surface">Game detail layout (Placeholder).</div>;
 }
 
 export default function App() {
   return (
-    <main>
-      <h1>Indie Game Discovery</h1>
-      <nav>
-        <Link to="/">Dashboard</Link> | <Link to="/game/sample-id">Game Detail</Link>
-      </nav>
-      <Routes>
-        <Route path="/" element={<DashboardPage />} />
+    <Routes>
+      <Route element={<MainLayout />}>
+        <Route path="/" element={<DiscoveryHome />} />
         <Route path="/game/:gameId" element={<GameDetailPage />} />
-      </Routes>
-    </main>
+      </Route>
+    </Routes>
   );
 }

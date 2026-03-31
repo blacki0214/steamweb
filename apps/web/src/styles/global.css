@@ -1,14 +1,71 @@
-﻿:root {
-  color-scheme: light;
-  font-family: "Segoe UI", Tahoma, sans-serif;
+@import "tailwindcss";
+
+@theme {
+  --color-error-dim: #d73357;
+  --color-on-primary: #39008c;
+  --color-error-container: #a70138;
+  --color-on-tertiary: #6a0a31;
+  --color-inverse-primary: #6e3bd7;
+  --color-on-tertiary-fixed-variant: #711036;
+  --color-primary-dim: #8455ef;
+  --color-tertiary-container: #fe81a4;
+  --color-surface: #060e20;
+  --color-surface-container-low: #091328;
+  --color-error: #ff6e84;
+  --color-surface-dim: #060e20;
+  --color-inverse-surface: #faf8ff;
+  --color-primary: #ba9eff;
+  --color-tertiary-fixed-dim: #f77c9e;
+  --color-background: #060e20;
+  --color-secondary-fixed: #65e1ff;
+  --color-on-primary-container: #2b006e;
+  --color-secondary-dim: #40ceed;
+  --color-secondary-container: #00687a;
+  --color-on-surface-variant: #a3aac4;
+  --color-tertiary-dim: #f17799;
+  --color-on-secondary-container: #ecfaff;
+  --color-surface-container-highest: #192540;
+  --color-tertiary: #ff97b2;
+  --color-primary-fixed-dim: #a27cff;
+  --color-on-error-container: #ffb2b9;
+  --color-on-secondary-fixed: #003a45;
+  --color-on-surface: #dee5ff;
+  --color-secondary: #53ddfc;
+  --color-on-tertiary-container: #5a0027;
+  --color-primary-container: #ae8dff;
+  --color-outline-variant: #40485d;
+  --color-outline: #6d758c;
+  --color-tertiary-fixed: #ff8eac;
+  --color-on-primary-fixed-variant: #370086;
+  --color-surface-container-lowest: #000000;
+  --color-surface-container: #0f1930;
+  --color-surface-variant: #192540;
+  --color-primary-fixed: #ae8dff;
+  --color-on-secondary: #004b58;
+  --color-surface-container-high: #141f38;
+  --color-on-background: #dee5ff;
+  --color-surface-tint: #ba9eff;
+  --color-on-primary-fixed: #000000;
+  --color-on-tertiary-fixed: #380016;
+  --color-secondary-fixed-dim: #48d4f3;
+  --color-surface-bright: #1f2b49;
+  --color-inverse-on-surface: #4d556b;
+  --color-on-secondary-fixed-variant: #005969;
+  --color-on-error: #490013;
+
+  --font-headline: 'Space Grotesk', sans-serif;
+  --font-body: 'Manrope', sans-serif;
+  --font-label: 'Manrope', sans-serif;
 }
 
-body {
-  margin: 0;
-  padding: 1.5rem;
+@layer utilities {
+  .material-symbols-outlined {
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+  }
+  .hide-scrollbar::-webkit-scrollbar { display: none; }
+  .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 }
 
-main {
-  max-width: 1000px;
-  margin: 0 auto;
+html, body, #root {
+  height: 100%;
 }
