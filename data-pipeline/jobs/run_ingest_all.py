@@ -1,21 +1,23 @@
 """
 run_ingest_all.py
 =================
-Master pipeline: runs all 3 ingestors in the correct dependency order.
+Master pipeline: runs all ingestors in the correct dependency order.
 
 Order:
-  1. steam_ingestor   → populates `games` + `steam_reviews`
-  2. youtube_ingestor → reads `games`, populates `youtube_videos`
-  3. reddit_ingestor  → reads `games`, populates `reddit_posts` + `reddit_comments`
+    1. steam_ingestor    → populates `games` + `steam_reviews`
+    2. steamdb_ingestor  → snapshots SteamDB trending/hot charts
+    3. youtube_ingestor  → reads `games`, populates `youtube_videos`
+    4. reddit_ingestor   → reads `games`, populates `reddit_posts` + `reddit_comments`
 
 Usage:
-    python -m jobs.run_ingest_all                  # full pipeline (indie + hot)
-    python -m jobs.run_ingest_all --mode indie      # indie games only
-    python -m jobs.run_ingest_all --mode hot        # hot games only
-    python -m jobs.run_ingest_all --dry-run         # test all 3 without writing DB
-    python -m jobs.run_ingest_all --skip-steam      # skip Steam (games already in DB)
-    python -m jobs.run_ingest_all --skip-youtube    # skip YouTube step
-    python -m jobs.run_ingest_all --skip-reddit     # skip Reddit step
+        python -m jobs.run_ingest_all                  # full pipeline (indie + hot)
+        python -m jobs.run_ingest_all --mode indie     # indie games only
+        python -m jobs.run_ingest_all --mode hot       # hot games only
+        python -m jobs.run_ingest_all --dry-run        # test all steps without writing DB
+        python -m jobs.run_ingest_all --skip-steam     # skip Steam (games already in DB)
+        python -m jobs.run_ingest_all --skip-steamdb   # skip SteamDB charts step
+        python -m jobs.run_ingest_all --skip-youtube   # skip YouTube step
+        python -m jobs.run_ingest_all --skip-reddit    # skip Reddit step
 """
 
 import argparse
@@ -34,6 +36,7 @@ def run(
     mode: str = "all",
     dry_run: bool = False,
     skip_steam: bool = False,
+    skip_steamdb: bool = False,
     skip_youtube: bool = False,
     skip_reddit: bool = False,
     limit: int | None = None,
@@ -56,12 +59,26 @@ def run(
             logger.error("Steam ingestor FAILED: %s", exc)
             errors.append(f"Steam: {exc}")
 
-    # ── Step 2: YouTube ────────────────────────────────────────
+    # ── Step 2: SteamDB ────────────────────────────────────────
+    if skip_steamdb:
+        logger.info("⏭️  Skipping SteamDB ingestor.")
+    else:
+        logger.info("=" * 60)
+        logger.info("📈 STEP 2/4 — SteamDB ingestor")
+        logger.info("=" * 60)
+        try:
+            from ingestors.steamdb_ingestor import run as steamdb_run
+            steamdb_run(dry_run=dry_run, limit=limit)
+        except Exception as exc:
+            logger.error("SteamDB ingestor FAILED: %s", exc)
+            errors.append(f"SteamDB: {exc}")
+
+    # ── Step 3: YouTube ────────────────────────────────────────
     if skip_youtube:
         logger.info("⏭️  Skipping YouTube ingestor.")
     else:
         logger.info("=" * 60)
-        logger.info("📺 STEP 2/3 — YouTube ingestor")
+        logger.info("📺 STEP 3/4 — YouTube ingestor")
         logger.info("=" * 60)
         try:
             from ingestors.youtube_ingestor import run as youtube_run
@@ -70,12 +87,12 @@ def run(
             logger.error("YouTube ingestor FAILED: %s", exc)
             errors.append(f"YouTube: {exc}")
 
-    # ── Step 3: Reddit ─────────────────────────────────────────
+    # ── Step 4: Reddit ─────────────────────────────────────────
     if skip_reddit:
         logger.info("⏭️  Skipping Reddit ingestor.")
     else:
         logger.info("=" * 60)
-        logger.info("🤖 STEP 3/3 — Reddit ingestor")
+        logger.info("🤖 STEP 4/4 — Reddit ingestor")
         logger.info("=" * 60)
         try:
             from ingestors.reddit_ingestor import run as reddit_run
@@ -105,6 +122,7 @@ if __name__ == "__main__":
     )
     parser.add_argument("--dry-run",      action="store_true", help="Print JSON, skip DB writes")
     parser.add_argument("--skip-steam",   action="store_true", help="Skip Steam ingestor")
+    parser.add_argument("--skip-steamdb", action="store_true", help="Skip SteamDB ingestor")
     parser.add_argument("--skip-youtube", action="store_true", help="Skip YouTube ingestor")
     parser.add_argument("--skip-reddit",  action="store_true", help="Skip Reddit ingestor")
     parser.add_argument("--limit", type=int, default=None, help="Max games per ingestor")
@@ -114,6 +132,7 @@ if __name__ == "__main__":
         mode=args.mode,
         dry_run=args.dry_run,
         skip_steam=args.skip_steam,
+        skip_steamdb=args.skip_steamdb,
         skip_youtube=args.skip_youtube,
         skip_reddit=args.skip_reddit,
         limit=args.limit,

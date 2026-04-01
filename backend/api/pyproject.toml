@@ -1,4 +1,8 @@
-﻿[tool.pytest.ini_options]
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.pytest.ini_options]
 pythonpath = ["app"]
 testpaths = ["tests"]
 

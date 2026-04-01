@@ -1,26 +1,47 @@
-﻿version: "3.9"
-services:
+﻿services:
   db:
     image: pgvector/pgvector:pg16
+    profiles: ["local-db"]
     environment:
       POSTGRES_DB: indie_games
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "${DB_HOST_PORT:-5432}:5432"
   api:
     build:
       context: ../..
       dockerfile: infra/docker/api.Dockerfile
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      BOT_SERVICE_TOKEN: ${BOT_SERVICE_TOKEN:-dev-bot-token}
+      PUBLIC_API_BASE_URL: ${PUBLIC_API_BASE_URL:-http://localhost:8001}
+      STEAM_WEB_API_KEY: ${STEAM_WEB_API_KEY}
     ports:
-      - "8000:8000"
-    depends_on:
-      - db
+      - "${API_HOST_PORT:-8001}:8000"
   web:
     build:
       context: ../..
       dockerfile: infra/docker/web.Dockerfile
     ports:
-      - "5173:5173"
+      - "${WEB_HOST_PORT:-5173}:5173"
+    depends_on:
+      - api
+
+  bot:
+    build:
+      context: ../..
+      dockerfile: infra/docker/bot.Dockerfile
+    environment:
+      DISCORD_BOT_TOKEN: ${DISCORD_BOT_TOKEN}
+      DISCORD_CLIENT_ID: ${DISCORD_CLIENT_ID}
+      BACKEND_BASE_URL: http://api:8000/api/v1
+      BOT_SERVICE_TOKEN: ${BOT_SERVICE_TOKEN:-dev-bot-token}
+      STEAM_REDIRECT_URI: ${STEAM_REDIRECT_URI:-http://localhost:3000/auth/steam/callback}
+      DISCORD_GUILD_ID: ${DISCORD_GUILD_ID}
+      DAILY_DIGEST_ENABLED: ${DAILY_DIGEST_ENABLED:-true}
+      DAILY_DIGEST_CHANNEL_ID: ${DAILY_DIGEST_CHANNEL_ID}
+      DAILY_DIGEST_HOUR_UTC: ${DAILY_DIGEST_HOUR_UTC:-8}
+      DAILY_DIGEST_MINUTE_UTC: ${DAILY_DIGEST_MINUTE_UTC:-0}
     depends_on:
       - api

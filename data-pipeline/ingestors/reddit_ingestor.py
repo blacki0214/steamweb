@@ -5,11 +5,8 @@ Fetches game-related posts and comments from Reddit using the
 public JSON API — NO API key or authentication required.
 
 Endpoints used:
-  - Subreddit search : https://www.reddit.com/r/{sub}/search.json?q={game}&...
+    - Sitewide search  : https://www.reddit.com/search.json?q={game}&...
   - Post comments    : https://www.reddit.com/r/{sub}/comments/{id}.json
-
-Subreddits searched per game:
-  r/indiegaming, r/gamereviews, r/Steam
 
 Rate limit: ~60 requests/min (unauthenticated).
 We use a 1.5s delay between requests to stay safe.
@@ -27,6 +24,7 @@ import logging
 import os
 from datetime import datetime, timezone
 from typing import Optional
+import re
 
 import requests
 from dotenv import load_dotenv
@@ -37,11 +35,15 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 USER_AGENT    = os.getenv("REDDIT_USER_AGENT", "IndieGameBot/1.0")
-SUBREDDITS    = ["indiegaming", "gamereviews", "Steam"]
-POSTS_PER_SUB = 3     # posts to fetch per subreddit per game
+SUBREDDIT_FILTERS = [
+    s.strip()
+    for s in os.getenv("REDDIT_SUBREDDITS", "").split(",")
+    if s.strip()
+]
+POSTS_PER_GAME = 10   # posts to fetch per game from sitewide search
 COMMENTS_PER_POST = 10  # top comments per post
 
-SEARCH_URL   = "https://www.reddit.com/r/{subreddit}/search.json"
+SEARCH_URL   = "https://www.reddit.com/search.json"
 COMMENTS_URL = "https://www.reddit.com/r/{subreddit}/comments/{post_id}.json"
 HEADERS      = {"User-Agent": USER_AGENT}
 
@@ -50,17 +52,27 @@ HEADERS      = {"User-Agent": USER_AGENT}
 # Fetch helpers
 # ──────────────────────────────────────────────
 
-def search_posts(game_name: str, subreddit: str, limit: int = POSTS_PER_SUB) -> list[dict]:
-    """Search a subreddit for posts about a game. Returns list of post dicts."""
+def _is_relevant_post(game_name: str, post: dict) -> bool:
+    """Keep only posts that likely refer to the game name."""
+    haystack = f"{post.get('title', '')} {post.get('selftext', '')}".lower()
+    game_l = game_name.lower()
+    if game_l in haystack:
+        return True
+
+    tokens = [t for t in re.split(r"\W+", game_l) if len(t) >= 4]
+    return any(token in haystack for token in tokens)
+
+
+def search_posts(game_name: str, limit: int = POSTS_PER_GAME) -> list[dict]:
+    """Search Reddit sitewide for posts about a game and apply lightweight filtering."""
     try:
         resp = requests.get(
-            SEARCH_URL.format(subreddit=subreddit),
+            SEARCH_URL,
             params={
                 "q":           game_name,
                 "sort":        "top",
                 "t":           "year",       # posts from the last year
                 "limit":       limit,
-                "restrict_sr": 1,            # search only within this subreddit
                 "type":        "link",
             },
             headers=HEADERS,
@@ -68,9 +80,15 @@ def search_posts(game_name: str, subreddit: str, limit: int = POSTS_PER_SUB) -> 
         )
         resp.raise_for_status()
         children = resp.json().get("data", {}).get("children", [])
-        return [c["data"] for c in children if c.get("kind") == "t3"]
+        posts = [c["data"] for c in children if c.get("kind") == "t3"]
+
+        if SUBREDDIT_FILTERS:
+            allowed = {s.lower() for s in SUBREDDIT_FILTERS}
+            posts = [p for p in posts if str(p.get("subreddit", "")).lower() in allowed]
+
+        return [p for p in posts if _is_relevant_post(game_name, p)]
     except Exception as exc:
-        logger.warning("Reddit search failed [r/%s, '%s']: %s", subreddit, game_name, exc)
+        logger.warning("Reddit search failed ['%s']: %s", game_name, exc)
         return []
 
 
@@ -219,21 +237,24 @@ def run(
         all_posts: list[dict] = []
         all_comments: list[dict] = []
 
-        for subreddit in SUBREDDITS:
-            raw_posts = search_posts(game_name, subreddit)
+        raw_posts = search_posts(game_name)
+        rate_sleep(1.5)
+
+        for raw_post in raw_posts:
+            post = parse_post(raw_post, app_id)
+            all_posts.append(post)
+
+            # Fetch comments from the originating subreddit of the post.
+            subreddit = str(raw_post.get("subreddit", ""))
+            if not subreddit:
+                continue
+
+            raw_comments = fetch_comments(subreddit, raw_post["id"])
             rate_sleep(1.5)
 
-            for raw_post in raw_posts:
-                post = parse_post(raw_post, app_id)
-                all_posts.append(post)
-
-                # Fetch comments for this post
-                raw_comments = fetch_comments(subreddit, raw_post["id"])
-                rate_sleep(1.5)
-
-                for raw_comment in raw_comments:
-                    comment = parse_comment(raw_comment, raw_post["id"], app_id)
-                    all_comments.append(comment)
+            for raw_comment in raw_comments:
+                comment = parse_comment(raw_comment, raw_post["id"], app_id)
+                all_comments.append(comment)
 
         total_posts_fetched    += len(all_posts)
         total_comments_fetched += len(all_comments)

@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 APPDETAILS_URL    = "https://store.steampowered.com/api/appdetails"
 APPREVIEWS_URL    = "https://store.steampowered.com/appreviews/{app_id}"
-MOST_PLAYED_URL   = "https://api.steampowered.com/ISteamChartsAPI/GetMostPlayedGames/v1/"
+MOST_PLAYED_URL   = "https://api.steampowered.com/ISteamChartsService/GetMostPlayedGames/v1/"
 FEATURED_CAT_URL  = "https://store.steampowered.com/api/featuredcategories"
 STORE_SEARCH_URL  = "https://store.steampowered.com/search/results"
 REVIEWS_PER_GAME  = 20
