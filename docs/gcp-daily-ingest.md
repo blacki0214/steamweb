@@ -24,9 +24,18 @@ From repo root, run PowerShell:
   -Region "asia-southeast1" `
   -DatabaseUrl "postgresql://..." `
   -YoutubeApiKey "YOUR_YOUTUBE_KEY" `
+  -RedditClientId "YOUR_REDDIT_CLIENT_ID" `
+  -RedditClientSecret "YOUR_REDDIT_CLIENT_SECRET" `
   -RedditUserAgent "steamweb-bot/1.0" `
   -Schedule "0 2 * * *" `
   -Timezone "Etc/UTC"
+```
+
+Optional for script/password grant:
+
+```powershell
+  -RedditUsername "YOUR_REDDIT_USERNAME" `
+  -RedditPassword "YOUR_REDDIT_PASSWORD"
 ```
 
 ## Verify

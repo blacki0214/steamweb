@@ -1,14 +1,22 @@
 """
 Reddit Ingestor
 ===============
-Fetches game-related posts and comments from Reddit using the
-public JSON API — NO API key or authentication required.
+Fetches game-related posts and comments from Reddit.
+
+Supports two modes:
+    1) OAuth API (recommended for cloud): uses app credentials
+    2) Public JSON API fallback (unauthenticated)
 
 Endpoints used:
-    - Sitewide search  : https://www.reddit.com/search.json?q={game}&...
-  - Post comments    : https://www.reddit.com/r/{sub}/comments/{id}.json
+    - OAuth token      : https://www.reddit.com/api/v1/access_token
+    - Sitewide search  : /search
+    - Post comments    : /r/{sub}/comments/{id}
 
-Rate limit: ~60 requests/min (unauthenticated).
+Env vars:
+    - REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET
+    - optional: REDDIT_USERNAME, REDDIT_PASSWORD (script/password grant)
+    - REDDIT_USER_AGENT (required by Reddit API policy)
+
 We use a 1.5s delay between requests to stay safe.
 
 Run:
@@ -22,7 +30,7 @@ import argparse
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Optional
 import re
 
@@ -35,6 +43,15 @@ load_dotenv()
 logger = logging.getLogger(__name__)
 
 USER_AGENT    = os.getenv("REDDIT_USER_AGENT", "IndieGameBot/1.0")
+REDDIT_CLIENT_ID = os.getenv("REDDIT_CLIENT_ID", "").strip()
+REDDIT_CLIENT_SECRET = os.getenv("REDDIT_CLIENT_SECRET", "").strip()
+REDDIT_USERNAME = os.getenv("REDDIT_USERNAME", "").strip()
+REDDIT_PASSWORD = os.getenv("REDDIT_PASSWORD", "").strip()
+
+OAUTH_TOKEN_URL = "https://www.reddit.com/api/v1/access_token"
+OAUTH_API_BASE = "https://oauth.reddit.com"
+PUBLIC_API_BASE = "https://www.reddit.com"
+
 SUBREDDIT_FILTERS = [
     s.strip()
     for s in os.getenv("REDDIT_SUBREDDITS", "").split(",")
@@ -43,14 +60,84 @@ SUBREDDIT_FILTERS = [
 POSTS_PER_GAME = 10   # posts to fetch per game from sitewide search
 COMMENTS_PER_POST = 10  # top comments per post
 
-SEARCH_URL   = "https://www.reddit.com/search.json"
-COMMENTS_URL = "https://www.reddit.com/r/{subreddit}/comments/{post_id}.json"
-HEADERS      = {"User-Agent": USER_AGENT}
+_oauth_token: str | None = None
+_oauth_expires_at: datetime | None = None
 
 
 # ──────────────────────────────────────────────
 # Fetch helpers
 # ──────────────────────────────────────────────
+
+def oauth_enabled() -> bool:
+    return bool(REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET)
+
+
+def _token_is_valid() -> bool:
+    if not _oauth_token or not _oauth_expires_at:
+        return False
+    return datetime.now(timezone.utc) < _oauth_expires_at
+
+
+def get_oauth_token() -> str:
+    """Get or refresh OAuth token for Reddit API."""
+    global _oauth_token, _oauth_expires_at
+
+    if _token_is_valid() and _oauth_token:
+        return _oauth_token
+
+    if not oauth_enabled():
+        raise RuntimeError("Reddit OAuth is not configured")
+
+    grant_data: dict[str, str] = {"grant_type": "client_credentials"}
+    if REDDIT_USERNAME and REDDIT_PASSWORD:
+        grant_data = {
+            "grant_type": "password",
+            "username": REDDIT_USERNAME,
+            "password": REDDIT_PASSWORD,
+        }
+
+    resp = requests.post(
+        OAUTH_TOKEN_URL,
+        data=grant_data,
+        auth=(REDDIT_CLIENT_ID, REDDIT_CLIENT_SECRET),
+        headers={"User-Agent": USER_AGENT},
+        timeout=20,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+
+    access_token = payload.get("access_token")
+    expires_in = int(payload.get("expires_in", 3600))
+    if not access_token:
+        raise RuntimeError("OAuth token response missing access_token")
+
+    _oauth_token = str(access_token)
+    _oauth_expires_at = datetime.now(timezone.utc) + timedelta(seconds=max(30, expires_in - 60))
+    return _oauth_token
+
+
+def reddit_get(path: str, params: dict) -> requests.Response:
+    """GET helper that prefers OAuth endpoint and falls back to public API."""
+    base_params = {**params, "raw_json": 1}
+    if oauth_enabled():
+        token = get_oauth_token()
+        headers = {
+            "User-Agent": USER_AGENT,
+            "Authorization": f"Bearer {token}",
+        }
+        return requests.get(
+            f"{OAUTH_API_BASE}{path}.json",
+            params=base_params,
+            headers=headers,
+            timeout=20,
+        )
+
+    return requests.get(
+        f"{PUBLIC_API_BASE}{path}.json",
+        params=base_params,
+        headers={"User-Agent": USER_AGENT},
+        timeout=20,
+    )
 
 def _is_relevant_post(game_name: str, post: dict) -> bool:
     """Keep only posts that likely refer to the game name."""
@@ -66,17 +153,15 @@ def _is_relevant_post(game_name: str, post: dict) -> bool:
 def search_posts(game_name: str, limit: int = POSTS_PER_GAME) -> list[dict]:
     """Search Reddit sitewide for posts about a game and apply lightweight filtering."""
     try:
-        resp = requests.get(
-            SEARCH_URL,
-            params={
-                "q":           game_name,
-                "sort":        "top",
-                "t":           "year",       # posts from the last year
-                "limit":       limit,
-                "type":        "link",
+        resp = reddit_get(
+            "/search",
+            {
+                "q": game_name,
+                "sort": "top",
+                "t": "year",       # posts from the last year
+                "limit": limit,
+                "type": "link",
             },
-            headers=HEADERS,
-            timeout=15,
         )
         resp.raise_for_status()
         children = resp.json().get("data", {}).get("children", [])
@@ -95,11 +180,9 @@ def search_posts(game_name: str, limit: int = POSTS_PER_GAME) -> list[dict]:
 def fetch_comments(subreddit: str, post_id: str, limit: int = COMMENTS_PER_POST) -> list[dict]:
     """Fetch top-level comments for a given post. Returns list of comment dicts."""
     try:
-        resp = requests.get(
-            COMMENTS_URL.format(subreddit=subreddit, post_id=post_id),
-            params={"limit": limit, "sort": "top", "depth": 1},
-            headers=HEADERS,
-            timeout=15,
+        resp = reddit_get(
+            f"/r/{subreddit}/comments/{post_id}",
+            {"limit": limit, "sort": "top", "depth": 1},
         )
         resp.raise_for_status()
         data = resp.json()
@@ -207,6 +290,11 @@ def run(
     limit: Optional[int] = None,
     force: bool = False,
 ) -> None:
+
+    if oauth_enabled():
+        logger.info("Reddit OAuth enabled (authenticated API mode)")
+    else:
+        logger.warning("Reddit OAuth not configured; using unauthenticated public API mode")
 
     if dry_run:
         games = [

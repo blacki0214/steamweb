@@ -24,6 +24,18 @@ param(
     [string]$RedditUserAgent = "steamweb-bot/1.0",
 
     [Parameter(Mandatory = $false)]
+    [string]$RedditClientId = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$RedditClientSecret = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$RedditUsername = "",
+
+    [Parameter(Mandatory = $false)]
+    [string]$RedditPassword = "",
+
+    [Parameter(Mandatory = $false)]
     [string]$SteamDbUserAgent = "steamweb-bot/1.0",
 
     [Parameter(Mandatory = $false)]
@@ -36,17 +48,28 @@ param(
     [string]$SchedulerSaName = "steamweb-scheduler",
 
     [Parameter(Mandatory = $false)]
-    [string]$Timezone = "Etc/UTC"
-
-    ,
-    [Parameter(Mandatory = $false)]
-    [string]$DatabaseUrlSecret = "steamweb-database-url"
+    [string]$Timezone = "Etc/UTC",
 
     [Parameter(Mandatory = $false)]
-    [string]$YoutubeApiKeySecret = "steamweb-youtube-api-key"
+    [string]$DatabaseUrlSecret = "steamweb-database-url",
 
     [Parameter(Mandatory = $false)]
-    [string]$RedditUserAgentSecret = "steamweb-reddit-user-agent"
+    [string]$YoutubeApiKeySecret = "steamweb-youtube-api-key",
+
+    [Parameter(Mandatory = $false)]
+    [string]$RedditUserAgentSecret = "steamweb-reddit-user-agent",
+
+    [Parameter(Mandatory = $false)]
+    [string]$RedditClientIdSecret = "steamweb-reddit-client-id",
+
+    [Parameter(Mandatory = $false)]
+    [string]$RedditClientSecretSecret = "steamweb-reddit-client-secret",
+
+    [Parameter(Mandatory = $false)]
+    [string]$RedditUsernameSecret = "steamweb-reddit-username",
+
+    [Parameter(Mandatory = $false)]
+    [string]$RedditPasswordSecret = "steamweb-reddit-password",
 
     [Parameter(Mandatory = $false)]
     [string]$SteamDbUserAgentSecret = "steamweb-steamdb-user-agent"
@@ -113,6 +136,10 @@ Write-Host "[5/8] Deploy/Update Cloud Run Job"
 Set-SecretValue -Name $DatabaseUrlSecret -Value $DatabaseUrl
 Set-SecretValue -Name $YoutubeApiKeySecret -Value $YoutubeApiKey
 Set-SecretValue -Name $RedditUserAgentSecret -Value $RedditUserAgent
+Set-SecretValue -Name $RedditClientIdSecret -Value $RedditClientId
+Set-SecretValue -Name $RedditClientSecretSecret -Value $RedditClientSecret
+Set-SecretValue -Name $RedditUsernameSecret -Value $RedditUsername
+Set-SecretValue -Name $RedditPasswordSecret -Value $RedditPassword
 Set-SecretValue -Name $SteamDbUserAgentSecret -Value $SteamDbUserAgent
 
 # Ensure runtime identity can read secrets.
@@ -125,6 +152,16 @@ $secretMappings = @(
 )
 if (-not [string]::IsNullOrWhiteSpace($YoutubeApiKey)) {
     $secretMappings += "YOUTUBE_API_KEY=$YoutubeApiKeySecret:latest"
+}
+if (-not [string]::IsNullOrWhiteSpace($RedditClientId) -and -not [string]::IsNullOrWhiteSpace($RedditClientSecret)) {
+    $secretMappings += "REDDIT_CLIENT_ID=$RedditClientIdSecret:latest"
+    $secretMappings += "REDDIT_CLIENT_SECRET=$RedditClientSecretSecret:latest"
+}
+if (-not [string]::IsNullOrWhiteSpace($RedditUsername)) {
+    $secretMappings += "REDDIT_USERNAME=$RedditUsernameSecret:latest"
+}
+if (-not [string]::IsNullOrWhiteSpace($RedditPassword)) {
+    $secretMappings += "REDDIT_PASSWORD=$RedditPasswordSecret:latest"
 }
 
 $setSecretsArg = $secretMappings -join ","

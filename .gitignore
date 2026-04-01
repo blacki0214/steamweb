@@ -1,4 +1,4 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -23,7 +23,7 @@ Thumbs.db
 !.vscode/settings.json
 
 # Skills
-.agents/skills/*/SKILL.md
+.agents/skills/gamedevskills/SKILL.md
 
 # Assets
 assets/App_des/
