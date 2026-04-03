@@ -332,14 +332,29 @@ def _compact_stat_line(item: dict[str, Any]) -> str:
     return f"{name} | steam {positive_reviews}/{total_reviews} | reddit {reddit_posts}"
 
 
-def build_daily_digest_embed(payload: dict[str, Any]) -> discord.Embed:
+def _format_utc_timestamp(dt: datetime) -> str:
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+
+
+def _format_discord_timestamp(dt: datetime) -> str:
+    return f"<t:{int(dt.astimezone(timezone.utc).timestamp())}:F>"
+
+
+def build_daily_digest_embed(payload: dict[str, Any], *, posted_at_utc: datetime | None = None) -> discord.Embed:
     top_10 = payload.get("top_10") or {}
     generated_at = str(payload.get("generated_at") or "")
+    posted_at_utc = posted_at_utc or datetime.now(timezone.utc)
+    updated_label = _format_utc_timestamp(posted_at_utc)
+    updated_discord = _format_discord_timestamp(posted_at_utc)
 
     embed = discord.Embed(
         title="Daily Steam Radar",
-        description="Top 10 snapshot from Steam trends + your ingested social/review signals.",
+        description=(
+            "Top 10 snapshot from Steam trends + your ingested social/review signals.\n"
+            f"Updated: {updated_label} ({updated_discord})"
+        ),
         color=discord.Color.orange(),
+        timestamp=posted_at_utc,
     )
 
     sections = [
@@ -397,8 +412,9 @@ async def post_daily_digest(bot_instance: "IndieBot") -> None:
         print("DAILY_DIGEST_CHANNEL_ID is invalid; expected integer Discord channel id")
         return
 
+    posted_at_utc = datetime.now(timezone.utc)
     payload = await bot_instance.api.get_daily_steam_digest(limit=10)
-    embed = build_daily_digest_embed(payload)
+    embed = build_daily_digest_embed(payload, posted_at_utc=posted_at_utc)
 
     channel = bot_instance.get_channel(channel_id)
     if channel is None:
@@ -409,7 +425,13 @@ async def post_daily_digest(bot_instance: "IndieBot") -> None:
         print(f"DAILY_DIGEST_CHANNEL_ID {channel_id} is not a messageable channel")
         return
 
-    await target.send(content="Daily Steam update", embed=embed)
+    await target.send(
+        content=(
+            "Daily Steam update "
+            f"(UTC: {_format_utc_timestamp(posted_at_utc)} | {_format_discord_timestamp(posted_at_utc)})"
+        ),
+        embed=embed,
+    )
 
 
 async def run_daily_digest_loop(bot_instance: "IndieBot") -> None:
@@ -647,8 +669,15 @@ async def digestnow(interaction: discord.Interaction) -> None:
         )
         return
 
-    embed = build_daily_digest_embed(payload)
-    await target.send(content="Daily Steam update (manual trigger)", embed=embed)
+    posted_at_utc = datetime.now(timezone.utc)
+    embed = build_daily_digest_embed(payload, posted_at_utc=posted_at_utc)
+    await target.send(
+        content=(
+            "Daily Steam update (manual trigger) "
+            f"(UTC: {_format_utc_timestamp(posted_at_utc)} | {_format_discord_timestamp(posted_at_utc)})"
+        ),
+        embed=embed,
+    )
     await _update_ephemeral_result(interaction, "Posted Daily Steam digest in this channel.")
 
 
