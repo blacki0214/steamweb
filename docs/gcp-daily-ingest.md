@@ -27,9 +27,12 @@ From repo root, run PowerShell:
   -RedditClientId "YOUR_REDDIT_CLIENT_ID" `
   -RedditClientSecret "YOUR_REDDIT_CLIENT_SECRET" `
   -RedditUserAgent "steamweb-bot/1.0" `
-  -Schedule "0 2 * * *" `
-  -Timezone "Etc/UTC"
+  -Schedule "0 3 * * *" `
+  -Timezone "Asia/Ho_Chi_Minh"
 ```
+
+Default recommendation: run once daily between 02:00 and 05:00 local time.
+Current default in this repository is 03:00 (`0 3 * * *`, `Asia/Ho_Chi_Minh`).
 
 Optional for script/password grant:
 

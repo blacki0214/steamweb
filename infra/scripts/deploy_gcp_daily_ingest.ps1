@@ -39,7 +39,7 @@ param(
     [string]$SteamDbUserAgent = "steamweb-bot/1.0",
 
     [Parameter(Mandatory = $false)]
-    [string]$Schedule = "0 2 * * *",
+    [string]$Schedule = "0 3 * * *",
 
     [Parameter(Mandatory = $false)]
     [string]$SchedulerLocation = "asia-southeast1",
@@ -48,7 +48,7 @@ param(
     [string]$SchedulerSaName = "steamweb-scheduler",
 
     [Parameter(Mandatory = $false)]
-    [string]$Timezone = "Etc/UTC",
+    [string]$Timezone = "Asia/Ho_Chi_Minh",
 
     [Parameter(Mandatory = $false)]
     [string]$DatabaseUrlSecret = "steamweb-database-url",
