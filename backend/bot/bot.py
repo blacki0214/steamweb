@@ -366,9 +366,9 @@ def _compact_stat_line(item: dict[str, Any]) -> str:
     return f"{title} | players {players_label} | price {price_label}"
 
 
-def _build_section_lines(items: list[dict[str, Any]], *, limit: int) -> tuple[list[str], int]:
+def _build_section_lines(items: list[dict[str, Any]], *, limit: int, max_field_chars: int) -> tuple[list[str], int]:
     # Keep each field under Discord's 1024-char limit without cutting markdown mid-link.
-    max_field_chars = 1000
+    max_field_chars = max(32, min(1024, max_field_chars))
     lines: list[str] = []
     used_chars = 0
     shown = 0
@@ -385,6 +385,35 @@ def _build_section_lines(items: list[dict[str, Any]], *, limit: int) -> tuple[li
     return lines, shown
 
 
+def _chunk_lines(lines: list[str], *, max_chars: int) -> list[str]:
+    max_chars = max(32, min(1024, max_chars))
+    chunks: list[str] = []
+    current: list[str] = []
+    used = 0
+
+    for line in lines:
+        add_len = len(line) + (1 if current else 0)
+        if used + add_len > max_chars and current:
+            chunks.append("\n".join(current))
+            current = [line]
+            used = len(line)
+            continue
+
+        if used + add_len > max_chars:
+            # Keep markdown valid even when one single line is too long.
+            current = [_truncate_text(line, max_chars)]
+            used = len(current[0])
+            continue
+
+        current.append(line)
+        used += add_len
+
+    if current:
+        chunks.append("\n".join(current))
+
+    return chunks
+
+
 def _format_utc_timestamp(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
 
@@ -393,23 +422,13 @@ def _format_discord_timestamp(dt: datetime) -> str:
     return f"<t:{int(dt.astimezone(timezone.utc).timestamp())}:F>"
 
 
-def build_daily_digest_embed(payload: dict[str, Any], *, posted_at_utc: datetime | None = None) -> discord.Embed:
+def build_daily_digest_embeds(payload: dict[str, Any], *, posted_at_utc: datetime | None = None) -> list[discord.Embed]:
     top_10 = payload.get("top_10") or {}
     section_meta = payload.get("section_meta") or {}
     generated_at = str(payload.get("generated_at") or "")
     posted_at_utc = posted_at_utc or datetime.now(timezone.utc)
     updated_label = _format_utc_timestamp(posted_at_utc)
     updated_discord = _format_discord_timestamp(posted_at_utc)
-
-    embed = discord.Embed(
-        title="Daily Steam Radar",
-        description=(
-            "Top 10 snapshot from Steam trends + your ingested social/review signals.\n"
-            f"Updated: {updated_label} ({updated_discord})"
-        ),
-        color=discord.Color.orange(),
-        timestamp=posted_at_utc,
-    )
 
     sections = [
         ("Most Played", "most_played_games"),
@@ -422,6 +441,7 @@ def build_daily_digest_embed(payload: dict[str, Any], *, posted_at_utc: datetime
 
     max_items_per_section = 10
 
+    section_fields: list[tuple[str, str]] = []
     for title, key in sections:
         items = top_10.get(key) or []
         meta = section_meta.get(key) if isinstance(section_meta, dict) else None
@@ -444,25 +464,85 @@ def build_daily_digest_embed(payload: dict[str, Any], *, posted_at_utc: datetime
             empty_value = "No data yet"
             if meta_line:
                 empty_value = f"{meta_line}\n{empty_value}"
-            embed.add_field(name=title, value=empty_value, inline=False)
+            section_fields.append((title, _truncate_text(empty_value, 1024)))
             continue
 
-        lines, shown = _build_section_lines(items, limit=max_items_per_section)
-        field_value = "\n".join(lines) if lines else "No data yet"
-        if meta_line:
-            field_value = f"{meta_line}\n{field_value}"
+        top_items = items[:max_items_per_section]
+        lines = [f"{idx}. {_compact_stat_line(item)}" for idx, item in enumerate(top_items, start=1)]
+        field_chunks = _chunk_lines(lines, max_chars=1024)
 
+        if meta_line and field_chunks:
+            first_budget = max(32, 1024 - (len(meta_line) + 1))
+            first_lines = _chunk_lines(lines, max_chars=first_budget)
+            if first_lines:
+                field_chunks = [f"{meta_line}\n{first_lines[0]}"]
+                remaining_lines = lines[len(first_lines[0].split("\n")):]
+                if remaining_lines:
+                    field_chunks.extend(_chunk_lines(remaining_lines, max_chars=1024))
+            else:
+                field_chunks = [_truncate_text(meta_line, 1024)]
+        elif meta_line and not field_chunks:
+            field_chunks = [_truncate_text(meta_line, 1024)]
+
+        shown = len(top_items)
         remaining = max(0, min(max_items_per_section, len(items)) - shown)
         if remaining > 0:
-            suffix = f"\n... +{remaining} more"
-            if len(field_value) + len(suffix) <= 1024:
-                field_value += suffix
+            suffix = f"... +{remaining} more"
+            if field_chunks:
+                if len(field_chunks[-1]) + len("\n") + len(suffix) <= 1024:
+                    field_chunks[-1] = f"{field_chunks[-1]}\n{suffix}"
+            else:
+                field_chunks = [suffix]
 
-        embed.add_field(name=title, value=field_value, inline=False)
+        for idx, chunk in enumerate(field_chunks):
+            field_name = title if idx == 0 else f"{title} (cont.)"
+            section_fields.append((field_name, _truncate_text(chunk, 1024)))
+
+    embeds: list[discord.Embed] = []
+    sections_per_embed = 2
+    current_embed: discord.Embed | None = None
+    sections_in_current = 0
+
+    def _new_embed(page_idx: int) -> discord.Embed:
+        page_title = "Daily Steam Radar" if page_idx == 1 else f"Daily Steam Radar (Page {page_idx})"
+        return discord.Embed(
+            title=page_title,
+            description=(
+                "Top 10 snapshot from Steam trends + your ingested social/review signals.\n"
+                f"Updated: {updated_label} ({updated_discord})"
+            ),
+            color=discord.Color.orange(),
+            timestamp=posted_at_utc,
+        )
+
+    page_idx = 1
+    current_embed = _new_embed(page_idx)
+    current_section_root: str | None = None
+
+    for field_name, field_value in section_fields:
+        is_new_section = not field_name.endswith("(cont.)")
+        if is_new_section and sections_in_current >= sections_per_embed:
+            embeds.append(current_embed)
+            page_idx += 1
+            current_embed = _new_embed(page_idx)
+            sections_in_current = 0
+
+        current_embed.add_field(name=field_name, value=field_value, inline=False)
+        if is_new_section:
+            sections_in_current += 1
+            current_section_root = field_name
+        elif current_section_root is None:
+            current_section_root = field_name
 
     if generated_at:
-        embed.set_footer(text=f"Generated at: {generated_at}")
-    return embed
+        footer_text = f"Generated at: {generated_at}"
+        if current_embed.footer and current_embed.footer.text:
+            current_embed.set_footer(text=f"{current_embed.footer.text} | {footer_text}")
+        else:
+            current_embed.set_footer(text=footer_text)
+
+    embeds.append(current_embed)
+    return embeds
 
 
 def _next_trigger_time(now: datetime) -> datetime:
@@ -499,7 +579,7 @@ async def post_daily_digest(bot_instance: "IndieBot") -> None:
 
     posted_at_utc = datetime.now(timezone.utc)
     payload = await bot_instance.api.get_daily_steam_digest(limit=10, realtime=True)
-    embed = build_daily_digest_embed(payload, posted_at_utc=posted_at_utc)
+    embeds = build_daily_digest_embeds(payload, posted_at_utc=posted_at_utc)
 
     channel = bot_instance.get_channel(channel_id)
     if channel is None:
@@ -510,13 +590,16 @@ async def post_daily_digest(bot_instance: "IndieBot") -> None:
         print(f"DAILY_DIGEST_CHANNEL_ID {channel_id} is not a messageable channel")
         return
 
-    await target.send(
-        content=(
-            "Daily Steam update "
-            f"(UTC: {_format_utc_timestamp(posted_at_utc)} | {_format_discord_timestamp(posted_at_utc)})"
-        ),
-        embed=embed,
+    content = (
+        "Daily Steam update "
+        f"(UTC: {_format_utc_timestamp(posted_at_utc)} | {_format_discord_timestamp(posted_at_utc)})"
     )
+    if embeds:
+        await target.send(content=content, embed=embeds[0])
+        for embed in embeds[1:]:
+            await target.send(embed=embed)
+    else:
+        await target.send(content=content)
 
 
 async def run_daily_digest_loop(bot_instance: "IndieBot") -> None:
@@ -755,14 +838,17 @@ async def digestnow(interaction: discord.Interaction) -> None:
         return
 
     posted_at_utc = datetime.now(timezone.utc)
-    embed = build_daily_digest_embed(payload, posted_at_utc=posted_at_utc)
-    await target.send(
-        content=(
-            "Daily Steam update (manual trigger) "
-            f"(UTC: {_format_utc_timestamp(posted_at_utc)} | {_format_discord_timestamp(posted_at_utc)})"
-        ),
-        embed=embed,
+    embeds = build_daily_digest_embeds(payload, posted_at_utc=posted_at_utc)
+    content = (
+        "Daily Steam update (manual trigger) "
+        f"(UTC: {_format_utc_timestamp(posted_at_utc)} | {_format_discord_timestamp(posted_at_utc)})"
     )
+    if embeds:
+        await target.send(content=content, embed=embeds[0])
+        for embed in embeds[1:]:
+            await target.send(embed=embed)
+    else:
+        await target.send(content=content)
     await _update_ephemeral_result(interaction, "Posted Daily Steam digest in this channel.")
 
 
