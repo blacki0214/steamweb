@@ -167,8 +167,12 @@ class ApiClient:
     async def get_steam_connection(self, discord_user_id: str) -> dict[str, Any]:
         return await self._request("GET", f"/users/{discord_user_id}/connections/steam")
 
-    async def get_daily_steam_digest(self, limit: int = 10) -> dict[str, Any]:
-        return await self._request("GET", "/reports/daily-steam", params={"limit": limit})
+    async def get_daily_steam_digest(self, limit: int = 10, realtime: bool = False) -> dict[str, Any]:
+        return await self._request(
+            "GET",
+            "/reports/daily-steam",
+            params={"limit": limit, "realtime": str(realtime).lower()},
+        )
 
 
 class IndieBot(commands.Bot):
@@ -460,7 +464,7 @@ async def post_daily_digest(bot_instance: "IndieBot") -> None:
         return
 
     posted_at_utc = datetime.now(timezone.utc)
-    payload = await bot_instance.api.get_daily_steam_digest(limit=10)
+    payload = await bot_instance.api.get_daily_steam_digest(limit=10, realtime=True)
     embed = build_daily_digest_embed(payload, posted_at_utc=posted_at_utc)
 
     channel = bot_instance.get_channel(channel_id)
@@ -708,7 +712,7 @@ async def digestnow(interaction: discord.Interaction) -> None:
         return
 
     try:
-        payload = await bot.api.get_daily_steam_digest(limit=10)
+        payload = await bot.api.get_daily_steam_digest(limit=10, realtime=True)
     except ApiError as exc:
         await _update_ephemeral_result(
             interaction,

@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
+import os
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends
 import httpx
+from bs4 import BeautifulSoup
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -14,6 +17,8 @@ from app.db.session import SessionLocal
 router = APIRouter(dependencies=[Depends(require_bot_auth)])
 
 FEATURED_CAT_URL = "https://store.steampowered.com/api/featuredcategories"
+STEAMDB_CHARTS_URL = "https://steamdb.info/charts/"
+STEAMDB_USER_AGENT = os.getenv("STEAMDB_USER_AGENT", "steamweb-bot/1.0 (+https://steamdb.info/charts/)")
 
 
 def _normalize_chart_type(value: str) -> str:
@@ -196,6 +201,157 @@ def _chart_block(chart_type: str, limit: int) -> list[dict[str, Any]]:
     return items
 
 
+def _parse_int_value(raw: Any) -> int | None:
+    text_value = str(raw or "")
+    cleaned = re.sub(r"[^0-9-]", "", text_value)
+    if not cleaned or cleaned == "-":
+        return None
+    try:
+        return int(cleaned)
+    except ValueError:
+        return None
+
+
+def _extract_app_id(href: str) -> int | None:
+    match = re.search(r"/app/(\d+)", href or "")
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _infer_chart_type_from_table(table: Any) -> str:
+    candidates: list[str] = []
+
+    table_id = table.get("id")
+    if table_id:
+        candidates.append(str(table_id))
+
+    classes = table.get("class", [])
+    if classes:
+        candidates.append(" ".join(classes))
+
+    heading = table.find_previous(["h1", "h2", "h3", "h4"])
+    if heading:
+        candidates.append(heading.get_text(" ", strip=True))
+
+    return " ".join(candidates).lower()
+
+
+def _parse_live_rows(table: Any, limit: int) -> list[dict[str, Any]]:
+    rows_out: list[dict[str, Any]] = []
+    rows = table.select("tbody tr") or table.select("tr")
+
+    for tr in rows:
+        app_link = tr.select_one('a[href*="/app/"]')
+        if app_link is None:
+            continue
+
+        app_id = _extract_app_id(str(app_link.get("href") or ""))
+        name = str(app_link.get_text(" ", strip=True) or "Unknown")
+
+        cells = tr.find_all("td")
+        if not cells:
+            continue
+
+        rank = _parse_int_value(cells[0].get_text(" ", strip=True))
+        if rank is None:
+            rank = len(rows_out) + 1
+
+        metrics: list[int] = []
+        for td in cells[1:]:
+            data_sort = td.get("data-sort")
+            parsed = _parse_int_value(data_sort if data_sort is not None else td.get_text(" ", strip=True))
+            if parsed is not None:
+                metrics.append(parsed)
+
+        rows_out.append(
+            {
+                "rank": rank,
+                "app_id": app_id,
+                "name": name,
+                "players_current": metrics[0] if len(metrics) >= 1 else None,
+                "players_peak_24h": metrics[1] if len(metrics) >= 2 else None,
+                "players_all_time_peak": metrics[2] if len(metrics) >= 3 else None,
+                "snapshot_at": datetime.now(timezone.utc),
+            }
+        )
+
+        if len(rows_out) >= limit:
+            break
+
+    return rows_out
+
+
+def _live_chart_blocks(limit: int) -> dict[str, list[dict[str, Any]]]:
+    headers = {
+        "User-Agent": STEAMDB_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": "https://steamdb.info/",
+        "Cache-Control": "no-cache",
+    }
+    try:
+        resp = httpx.get(STEAMDB_CHARTS_URL, headers=headers, timeout=20)
+        resp.raise_for_status()
+    except Exception:
+        return {}
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    target_types = {"most_played", "trending", "hot_releases", "popular_releases"}
+    raw_by_type: dict[str, list[dict[str, Any]]] = {}
+
+    for table in soup.select("table"):
+        normalized = _normalize_chart_type(_infer_chart_type_from_table(table))
+        if normalized not in target_types:
+            continue
+        if normalized in raw_by_type:
+            continue
+
+        parsed_rows = _parse_live_rows(table, limit)
+        if parsed_rows:
+            raw_by_type[normalized] = parsed_rows
+
+    all_ids: list[int] = []
+    for items in raw_by_type.values():
+        for row in items:
+            app_id = row.get("app_id")
+            if isinstance(app_id, int):
+                all_ids.append(app_id)
+
+    enrich = _enrich_games(sorted(set(all_ids)))
+    out: dict[str, list[dict[str, Any]]] = {}
+    for chart_type, rows in raw_by_type.items():
+        mapped: list[dict[str, Any]] = []
+        for row in rows[:limit]:
+            app_id = row.get("app_id")
+            extra = enrich.get(app_id) if isinstance(app_id, int) else None
+            mapped.append(
+                {
+                    "rank": int(row.get("rank") or 0),
+                    "app_id": app_id if isinstance(app_id, int) else None,
+                    "name": (extra or {}).get("name") or str(row.get("name") or "Unknown"),
+                    "players_current": row.get("players_current"),
+                    "players_peak_24h": row.get("players_peak_24h"),
+                    "players_all_time_peak": row.get("players_all_time_peak"),
+                    "steam_store_url": (
+                        f"https://store.steampowered.com/app/{app_id}"
+                        if isinstance(app_id, int)
+                        else None
+                    ),
+                    "steam_reviews": (extra or {}).get("steam", {}),
+                    "reddit": (extra or {}).get("reddit", {}),
+                    "youtube": (extra or {}).get("youtube", {}),
+                    "snapshot_at": row.get("snapshot_at"),
+                }
+            )
+        out[chart_type] = mapped
+
+    return out
+
+
 def _new_games_blocks(limit: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     try:
         with SessionLocal() as db:
@@ -297,10 +453,13 @@ def _fallback_new_games_blocks(limit: int) -> tuple[list[dict[str, Any]], list[d
 
 
 @router.get("/daily-steam")
-def get_daily_steam_digest(limit: int = 10) -> dict[str, Any]:
+def get_daily_steam_digest(limit: int = 10, realtime: bool = False) -> dict[str, Any]:
     safe_limit = max(1, min(limit, 10))
 
     chart_rows: dict[str, list[dict[str, Any]]] = {}
+    if realtime:
+        chart_rows.update(_live_chart_blocks(safe_limit))
+
     try:
         with SessionLocal() as db:
             chart_types = db.execute(
