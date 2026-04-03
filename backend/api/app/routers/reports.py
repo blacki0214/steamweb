@@ -352,6 +352,46 @@ def _live_chart_blocks(limit: int) -> dict[str, list[dict[str, Any]]]:
     return out
 
 
+def _rows_signature(rows: list[dict[str, Any]], size: int = 5) -> tuple[tuple[int | None, int], ...]:
+    signature: list[tuple[int | None, int]] = []
+    for row in rows[:size]:
+        app_id = row.get("app_id")
+        rank_raw = row.get("rank")
+        rank = int(rank_raw) if isinstance(rank_raw, int) else 0
+        signature.append((app_id if isinstance(app_id, int) else None, rank))
+    return tuple(signature)
+
+
+def _latest_snapshot_iso(rows: list[dict[str, Any]]) -> str | None:
+    latest: datetime | None = None
+    for row in rows:
+        snapshot = row.get("snapshot_at")
+        if isinstance(snapshot, datetime):
+            if latest is None or snapshot > latest:
+                latest = snapshot
+    if latest is None:
+        return None
+    return latest.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _realtime_quality_reason(
+    section: str,
+    rows: list[dict[str, Any]],
+    *,
+    limit: int,
+    most_played_live_sig: tuple[tuple[int | None, int], ...],
+) -> str | None:
+    min_rows = max(1, min(3, limit))
+    if len(rows) < min_rows:
+        return "insufficient_rows"
+
+    if section == "trending" and most_played_live_sig:
+        if _rows_signature(rows) == most_played_live_sig:
+            return "same_as_most_played"
+
+    return None
+
+
 def _new_games_blocks(limit: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     try:
         with SessionLocal() as db:
@@ -456,9 +496,44 @@ def _fallback_new_games_blocks(limit: int) -> tuple[list[dict[str, Any]], list[d
 def get_daily_steam_digest(limit: int = 10, realtime: bool = False) -> dict[str, Any]:
     safe_limit = max(1, min(limit, 10))
 
+    target_chart_sections = ["most_played", "trending", "hot_releases", "popular_releases"]
     chart_rows: dict[str, list[dict[str, Any]]] = {}
+    chart_meta: dict[str, dict[str, Any]] = {}
+
     if realtime:
-        chart_rows.update(_live_chart_blocks(safe_limit))
+        live_rows_by_section = _live_chart_blocks(safe_limit)
+        live_most_played_sig = _rows_signature(live_rows_by_section.get("most_played", []))
+
+        for section in target_chart_sections:
+            rows = live_rows_by_section.get(section, [])
+            if not rows:
+                chart_meta[section] = {
+                    "source": "live_steamdb_missing",
+                    "snapshot_at": None,
+                    "quality": "missing",
+                }
+                continue
+
+            quality_reason = _realtime_quality_reason(
+                section,
+                rows,
+                limit=safe_limit,
+                most_played_live_sig=live_most_played_sig,
+            )
+            if quality_reason:
+                chart_meta[section] = {
+                    "source": "live_steamdb_rejected",
+                    "snapshot_at": _latest_snapshot_iso(rows),
+                    "quality": quality_reason,
+                }
+                continue
+
+            chart_rows[section] = rows
+            chart_meta[section] = {
+                "source": "live_steamdb",
+                "snapshot_at": _latest_snapshot_iso(rows),
+                "quality": "accepted",
+            }
 
     try:
         with SessionLocal() as db:
@@ -476,20 +551,93 @@ def get_daily_steam_digest(limit: int = 10, realtime: bool = False) -> dict[str,
 
     for raw_chart_type in chart_types:
         normalized = _normalize_chart_type(str(raw_chart_type))
-        if normalized not in {"most_played", "trending", "hot_releases", "popular_releases"}:
+        if normalized not in set(target_chart_sections):
             continue
         if normalized in chart_rows:
             continue
-        chart_rows[normalized] = _chart_block(str(raw_chart_type), safe_limit)
+        db_rows = _chart_block(str(raw_chart_type), safe_limit)
+        if not db_rows:
+            chart_meta.setdefault(
+                normalized,
+                {
+                    "source": "db_snapshot_empty",
+                    "snapshot_at": None,
+                    "quality": "empty",
+                },
+            )
+            continue
+
+        chart_rows[normalized] = db_rows
+        chart_meta[normalized] = {
+            "source": "db_snapshot",
+            "snapshot_at": _latest_snapshot_iso(db_rows),
+            "quality": "accepted",
+        }
 
     most_played_rows = chart_rows.get("most_played", [])
-    trending_rows = chart_rows.get("trending", []) or most_played_rows
+    trending_rows = chart_rows.get("trending", [])
     popular_rows = chart_rows.get("popular_releases", [])
-    hot_rows = chart_rows.get("hot_releases", []) or popular_rows or most_played_rows
+
+    hot_direct_rows = chart_rows.get("hot_releases", [])
+    if hot_direct_rows:
+        hot_rows = hot_direct_rows
+        hot_meta = chart_meta.get(
+            "hot_releases",
+            {"source": "unknown", "snapshot_at": _latest_snapshot_iso(hot_rows), "quality": "accepted"},
+        )
+    elif popular_rows:
+        hot_rows = popular_rows
+        hot_meta = {
+            "source": "fallback_from_popular_releases",
+            "snapshot_at": _latest_snapshot_iso(hot_rows),
+            "quality": "fallback",
+        }
+    elif most_played_rows:
+        hot_rows = most_played_rows
+        hot_meta = {
+            "source": "fallback_from_most_played",
+            "snapshot_at": _latest_snapshot_iso(hot_rows),
+            "quality": "fallback",
+        }
+    else:
+        hot_rows = []
+        hot_meta = {
+            "source": "missing",
+            "snapshot_at": None,
+            "quality": "empty",
+        }
 
     new_this_week, releases_today = _new_games_blocks(safe_limit)
+    new_source = "db_release_calendar"
     if not new_this_week and not releases_today:
         new_this_week, releases_today = _fallback_new_games_blocks(safe_limit)
+        new_source = "steam_store_featured_fallback"
+
+    section_meta = {
+        "most_played_games": chart_meta.get(
+            "most_played",
+            {"source": "missing", "snapshot_at": _latest_snapshot_iso(most_played_rows), "quality": "empty"},
+        ),
+        "trending_games": chart_meta.get(
+            "trending",
+            {"source": "missing", "snapshot_at": _latest_snapshot_iso(trending_rows), "quality": "empty"},
+        ),
+        "hot_releases": hot_meta,
+        "popular_releases": chart_meta.get(
+            "popular_releases",
+            {"source": "missing", "snapshot_at": _latest_snapshot_iso(popular_rows), "quality": "empty"},
+        ),
+        "new_games_this_week": {
+            "source": new_source,
+            "snapshot_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "quality": "accepted" if new_this_week else "empty",
+        },
+        "releases_today": {
+            "source": new_source,
+            "snapshot_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "quality": "accepted" if releases_today else "empty",
+        },
+    }
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -501,4 +649,5 @@ def get_daily_steam_digest(limit: int = 10, realtime: bool = False) -> dict[str,
             "new_games_this_week": new_this_week,
             "releases_today": releases_today,
         },
+        "section_meta": section_meta,
     }

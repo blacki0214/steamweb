@@ -376,6 +376,7 @@ def _format_discord_timestamp(dt: datetime) -> str:
 
 def build_daily_digest_embed(payload: dict[str, Any], *, posted_at_utc: datetime | None = None) -> discord.Embed:
     top_10 = payload.get("top_10") or {}
+    section_meta = payload.get("section_meta") or {}
     generated_at = str(payload.get("generated_at") or "")
     posted_at_utc = posted_at_utc or datetime.now(timezone.utc)
     updated_label = _format_utc_timestamp(posted_at_utc)
@@ -405,8 +406,27 @@ def build_daily_digest_embed(payload: dict[str, Any], *, posted_at_utc: datetime
 
     for title, key in sections:
         items = top_10.get(key) or []
+        meta = section_meta.get(key) if isinstance(section_meta, dict) else None
+        meta_line = ""
+        if isinstance(meta, dict):
+            source = str(meta.get("source") or "")
+            snapshot_at = str(meta.get("snapshot_at") or "")
+            quality = str(meta.get("quality") or "")
+            meta_parts: list[str] = []
+            if source:
+                meta_parts.append(f"source: {source}")
+            if snapshot_at:
+                meta_parts.append(f"snapshot: {snapshot_at}")
+            if quality and quality != "accepted":
+                meta_parts.append(f"quality: {quality}")
+            if meta_parts:
+                meta_line = " | ".join(meta_parts)
+
         if not isinstance(items, list) or not items:
-            embed.add_field(name=title, value="No data yet", inline=False)
+            empty_value = "No data yet"
+            if meta_line:
+                empty_value = f"{meta_line}\n{empty_value}"
+            embed.add_field(name=title, value=empty_value, inline=False)
             continue
 
         top_items = items[:max_items_per_section]
@@ -415,6 +435,8 @@ def build_daily_digest_embed(payload: dict[str, Any], *, posted_at_utc: datetime
             lines.append(f"{idx}. {_compact_stat_line(item)}")
 
         field_value = "\n".join(lines)
+        if meta_line:
+            field_value = f"{meta_line}\n{field_value}"
         if len(field_value) > safe_field_char_limit:
             field_value = _truncate_text(field_value, safe_field_char_limit)
 
