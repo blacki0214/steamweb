@@ -578,7 +578,24 @@ def get_daily_steam_digest(limit: int = 10, realtime: bool = False) -> dict[str,
     trending_rows = chart_rows.get("trending", [])
     popular_rows = chart_rows.get("popular_releases", [])
 
+    # Avoid showing duplicated sections when source data mirrors another chart.
+    if trending_rows and most_played_rows and _rows_signature(trending_rows) == _rows_signature(most_played_rows):
+        trending_rows = []
+        chart_meta["trending"] = {
+            "source": "duplicate_filtered",
+            "snapshot_at": _latest_snapshot_iso(chart_rows.get("trending", [])),
+            "quality": "same_as_most_played",
+        }
+
     hot_direct_rows = chart_rows.get("hot_releases", [])
+    if hot_direct_rows and popular_rows and _rows_signature(hot_direct_rows) == _rows_signature(popular_rows):
+        hot_direct_rows = []
+        chart_meta["hot_releases"] = {
+            "source": "duplicate_filtered",
+            "snapshot_at": _latest_snapshot_iso(chart_rows.get("hot_releases", [])),
+            "quality": "same_as_popular_releases",
+        }
+
     if hot_direct_rows:
         hot_rows = hot_direct_rows
         hot_meta = chart_meta.get(

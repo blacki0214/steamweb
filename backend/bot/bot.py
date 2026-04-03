@@ -350,7 +350,7 @@ def _truncate_text(value: str, limit: int) -> str:
 
 
 def _compact_stat_line(item: dict[str, Any]) -> str:
-    name = _truncate_text(str(item.get("name") or "Unknown"), 34)
+    name = _truncate_text(str(item.get("name") or "Unknown"), 30)
     app_id = item.get("app_id")
     store_url = item.get("steam_store_url")
     players_label = _fmt_players(item.get("players_current"))
@@ -364,6 +364,25 @@ def _compact_stat_line(item: dict[str, Any]) -> str:
         title = f"[{name}]({store_url})"
 
     return f"{title} | players {players_label} | price {price_label}"
+
+
+def _build_section_lines(items: list[dict[str, Any]], *, limit: int) -> tuple[list[str], int]:
+    # Keep each field under Discord's 1024-char limit without cutting markdown mid-link.
+    max_field_chars = 1000
+    lines: list[str] = []
+    used_chars = 0
+    shown = 0
+
+    for idx, item in enumerate(items[:limit], start=1):
+        line = f"{idx}. {_compact_stat_line(item)}"
+        additional = len(line) + (1 if lines else 0)
+        if used_chars + additional > max_field_chars:
+            break
+        lines.append(line)
+        used_chars += additional
+        shown += 1
+
+    return lines, shown
 
 
 def _format_utc_timestamp(dt: datetime) -> str:
@@ -402,7 +421,6 @@ def build_daily_digest_embed(payload: dict[str, Any], *, posted_at_utc: datetime
     ]
 
     max_items_per_section = 10
-    safe_field_char_limit = 850
 
     for title, key in sections:
         items = top_10.get(key) or []
@@ -429,21 +447,15 @@ def build_daily_digest_embed(payload: dict[str, Any], *, posted_at_utc: datetime
             embed.add_field(name=title, value=empty_value, inline=False)
             continue
 
-        top_items = items[:max_items_per_section]
-        lines: list[str] = []
-        for idx, item in enumerate(top_items, start=1):
-            lines.append(f"{idx}. {_compact_stat_line(item)}")
-
-        field_value = "\n".join(lines)
+        lines, shown = _build_section_lines(items, limit=max_items_per_section)
+        field_value = "\n".join(lines) if lines else "No data yet"
         if meta_line:
             field_value = f"{meta_line}\n{field_value}"
-        if len(field_value) > safe_field_char_limit:
-            field_value = _truncate_text(field_value, safe_field_char_limit)
 
-        remaining = len(items) - len(top_items)
+        remaining = max(0, min(max_items_per_section, len(items)) - shown)
         if remaining > 0:
             suffix = f"\n... +{remaining} more"
-            if len(field_value) + len(suffix) <= safe_field_char_limit:
+            if len(field_value) + len(suffix) <= 1024:
                 field_value += suffix
 
         embed.add_field(name=title, value=field_value, inline=False)
