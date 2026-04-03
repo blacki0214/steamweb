@@ -314,22 +314,62 @@ def build_steam_profile_embed(data: dict[str, Any]) -> discord.Embed:
     return embed
 
 
-def _compact_stat_line(item: dict[str, Any]) -> str:
+def _fmt_players(value: Any) -> str:
+    try:
+        ivalue = int(value)
+    except (TypeError, ValueError):
+        return "n/a"
+    return f"{ivalue:,}"
+
+
+def _players_bar(value: Any, max_value: int, width: int = 8) -> str:
+    try:
+        ivalue = int(value)
+    except (TypeError, ValueError):
+        return "-" * width
+    if max_value <= 0:
+        return "-" * width
+    filled = max(1, min(width, int(round((ivalue / max_value) * width)))) if ivalue > 0 else 0
+    return ("#" * filled) + ("-" * (width - filled))
+
+
+def _fmt_price(steam: dict[str, Any]) -> str:
+    if bool(steam.get("is_free") or False):
+        return "Free"
+    raw = steam.get("price_usd")
+    if raw is None:
+        return "n/a"
+    try:
+        price = float(raw)
+    except (TypeError, ValueError):
+        return "n/a"
+    return f"${price:.2f}"
+
+
+def _compact_stat_line(item: dict[str, Any], max_players: int) -> str:
     name = str(item.get("name") or "Unknown")
     app_id = item.get("app_id")
+    players_current = item.get("players_current")
     steam = item.get("steam_reviews") or {}
     reddit = item.get("reddit") or {}
 
     total_reviews = steam.get("total_reviews") or 0
     positive_reviews = steam.get("positive_reviews") or 0
     reddit_posts = reddit.get("posts") or 0
+    players_label = _fmt_players(players_current)
+    players_chart = _players_bar(players_current, max_players)
+    price_label = _fmt_price(steam)
 
     if isinstance(app_id, int):
         return (
             f"[{name}](https://store.steampowered.com/app/{app_id}) "
+            f"| players {players_label} [{players_chart}] | price {price_label} "
             f"| steam {positive_reviews}/{total_reviews} | reddit {reddit_posts}"
         )
-    return f"{name} | steam {positive_reviews}/{total_reviews} | reddit {reddit_posts}"
+    return (
+        f"{name} | players {players_label} [{players_chart}] | price {price_label} "
+        f"| steam {positive_reviews}/{total_reviews} | reddit {reddit_posts}"
+    )
 
 
 def _format_utc_timestamp(dt: datetime) -> str:
@@ -372,7 +412,15 @@ def build_daily_digest_embed(payload: dict[str, Any], *, posted_at_utc: datetime
             embed.add_field(name=title, value="No data yet", inline=False)
             continue
 
-        lines = [f"{idx}. {_compact_stat_line(item)}" for idx, item in enumerate(items[:10], start=1)]
+        top_items = items[:10]
+        max_players = 0
+        for item in top_items:
+            try:
+                max_players = max(max_players, int(item.get("players_current") or 0))
+            except (TypeError, ValueError):
+                continue
+
+        lines = [f"{idx}. {_compact_stat_line(item, max_players)}" for idx, item in enumerate(top_items, start=1)]
         embed.add_field(name=title, value="\n".join(lines), inline=False)
 
     if generated_at:

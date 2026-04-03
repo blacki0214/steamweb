@@ -64,6 +64,8 @@ def _enrich_games(app_ids: list[int]) -> dict[int, dict[str, Any]]:
                         g.id AS app_id,
                         g.name,
                         g.release_date,
+                        g.price_usd,
+                        g.is_free,
                         g.total_reviews,
                         g.positive_reviews,
                         (
@@ -103,10 +105,15 @@ def _enrich_games(app_ids: list[int]) -> dict[int, dict[str, Any]]:
     for row in rows:
         app_id = int(row["app_id"])
         video_id = row.get("top_video_id")
+        raw_price = row.get("price_usd")
+        price_usd = float(raw_price) if raw_price is not None else None
+
         out[app_id] = {
             "name": str(row.get("name") or f"app_{app_id}"),
             "release_date": row.get("release_date"),
             "steam": {
+            "price_usd": price_usd,
+                "is_free": bool(row.get("is_free") or False),
                 "total_reviews": int(row.get("total_reviews") or 0),
                 "positive_reviews": int(row.get("positive_reviews") or 0),
                 "review_samples": int(row.get("steam_review_samples") or 0),
