@@ -46,6 +46,7 @@ DAILY_DIGEST_CHANNEL_ID = os.getenv("DAILY_DIGEST_CHANNEL_ID", "").strip()
 DAILY_DIGEST_HOUR_UTC = int(os.getenv("DAILY_DIGEST_HOUR_UTC", "8"))
 DAILY_DIGEST_MINUTE_UTC = int(os.getenv("DAILY_DIGEST_MINUTE_UTC", "0"))
 DAILY_DIGEST_ENABLED = os.getenv("DAILY_DIGEST_ENABLED", "true").lower() == "true"
+USD_TO_VND_RATE = int(os.getenv("USD_TO_VND_RATE", "25000"))
 ENABLE_HEALTH_SERVER = os.getenv("ENABLE_HEALTH_SERVER", "true").lower() == "true"
 HEALTH_SERVER_HOST = os.getenv("HEALTH_SERVER_HOST", "0.0.0.0")
 HEALTH_SERVER_PORT = int(os.getenv("PORT", "8080"))
@@ -322,18 +323,7 @@ def _fmt_players(value: Any) -> str:
     return f"{ivalue:,}"
 
 
-def _players_bar(value: Any, max_value: int, width: int = 8) -> str:
-    try:
-        ivalue = int(value)
-    except (TypeError, ValueError):
-        return "-" * width
-    if max_value <= 0:
-        return "-" * width
-    filled = max(1, min(width, int(round((ivalue / max_value) * width)))) if ivalue > 0 else 0
-    return ("#" * filled) + ("-" * (width - filled))
-
-
-def _fmt_price(steam: dict[str, Any]) -> str:
+def _fmt_price_vnd(steam: dict[str, Any]) -> str:
     if bool(steam.get("is_free") or False):
         return "Free"
     raw = steam.get("price_usd")
@@ -343,7 +333,8 @@ def _fmt_price(steam: dict[str, Any]) -> str:
         price = float(raw)
     except (TypeError, ValueError):
         return "n/a"
-    return f"${price:.2f}"
+    price_vnd = round(price * max(1, USD_TO_VND_RATE))
+    return f"{price_vnd:,.0f} VND"
 
 
 def _truncate_text(value: str, limit: int) -> str:
@@ -354,24 +345,13 @@ def _truncate_text(value: str, limit: int) -> str:
     return value[: limit - 3] + "..."
 
 
-def _compact_stat_line(item: dict[str, Any], max_players: int) -> str:
+def _compact_stat_line(item: dict[str, Any]) -> str:
     name = _truncate_text(str(item.get("name") or "Unknown"), 34)
-    players_current = item.get("players_current")
+    players_label = _fmt_players(item.get("players_current"))
     steam = item.get("steam_reviews") or {}
-    reddit = item.get("reddit") or {}
+    price_label = _fmt_price_vnd(steam)
 
-    total_reviews = steam.get("total_reviews") or 0
-    positive_reviews = steam.get("positive_reviews") or 0
-    reddit_posts = reddit.get("posts") or 0
-    players_label = _fmt_players(players_current)
-    players_chart = _players_bar(players_current, max_players)
-    price_label = _fmt_price(steam)
-    price_compact = price_label if price_label in {"Free", "n/a"} else price_label
-
-    return (
-        f"{name} | p {players_label} [{players_chart}] | {price_compact} "
-        f"| s {positive_reviews}/{total_reviews} | r {reddit_posts}"
-    )
+    return f"{name} | players {players_label} | price {price_label}"
 
 
 def _format_utc_timestamp(dt: datetime) -> str:
@@ -408,7 +388,7 @@ def build_daily_digest_embed(payload: dict[str, Any], *, posted_at_utc: datetime
         ("Releases Today", "releases_today"),
     ]
 
-    max_items_per_section = 5
+    max_items_per_section = 10
     safe_field_char_limit = 850
 
     for title, key in sections:
@@ -418,16 +398,9 @@ def build_daily_digest_embed(payload: dict[str, Any], *, posted_at_utc: datetime
             continue
 
         top_items = items[:max_items_per_section]
-        max_players = 0
-        for item in top_items:
-            try:
-                max_players = max(max_players, int(item.get("players_current") or 0))
-            except (TypeError, ValueError):
-                continue
-
         lines: list[str] = []
         for idx, item in enumerate(top_items, start=1):
-            lines.append(f"{idx}. {_compact_stat_line(item, max_players)}")
+            lines.append(f"{idx}. {_compact_stat_line(item)}")
 
         field_value = "\n".join(lines)
         if len(field_value) > safe_field_char_limit:
