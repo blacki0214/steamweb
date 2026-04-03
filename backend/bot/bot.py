@@ -347,11 +347,19 @@ def _truncate_text(value: str, limit: int) -> str:
 
 def _compact_stat_line(item: dict[str, Any]) -> str:
     name = _truncate_text(str(item.get("name") or "Unknown"), 34)
+    app_id = item.get("app_id")
+    store_url = item.get("steam_store_url")
     players_label = _fmt_players(item.get("players_current"))
     steam = item.get("steam_reviews") or {}
     price_label = _fmt_price_vnd(steam)
 
-    return f"{name} | players {players_label} | price {price_label}"
+    title = name
+    if isinstance(app_id, int):
+        title = f"[{name}](https://store.steampowered.com/app/{app_id})"
+    elif isinstance(store_url, str) and store_url:
+        title = f"[{name}]({store_url})"
+
+    return f"{title} | players {players_label} | price {price_label}"
 
 
 def _format_utc_timestamp(dt: datetime) -> str:
