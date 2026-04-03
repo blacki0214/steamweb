@@ -441,7 +441,25 @@ def build_daily_digest_embeds(payload: dict[str, Any], *, posted_at_utc: datetim
 
     max_items_per_section = 10
 
-    section_fields: list[tuple[str, str]] = []
+    for title, key in sections:
+        items = top_10.get(key) or []
+        meta = section_meta.get(key) if isinstance(section_meta, dict) else None
+        meta_line = ""
+        if isinstance(meta, dict):
+            source = str(meta.get("source") or "")
+            snapshot_at = str(meta.get("snapshot_at") or "")
+            quality = str(meta.get("quality") or "")
+            meta_parts: list[str] = []
+            if source:
+                meta_parts.append(f"source: {source}")
+            if snapshot_at:
+                meta_parts.append(f"snapshot: {snapshot_at}")
+            if quality and quality != "accepted":
+                meta_parts.append(f"quality: {quality}")
+            if meta_parts:
+                meta_line = " | ".join(meta_parts)
+    embeds: list[discord.Embed] = []
+
     for title, key in sections:
         items = top_10.get(key) or []
         meta = section_meta.get(key) if isinstance(section_meta, dict) else None
@@ -460,88 +478,40 @@ def build_daily_digest_embeds(payload: dict[str, Any], *, posted_at_utc: datetim
             if meta_parts:
                 meta_line = " | ".join(meta_parts)
 
-        if not isinstance(items, list) or not items:
-            empty_value = "No data yet"
-            if meta_line:
-                empty_value = f"{meta_line}\n{empty_value}"
-            section_fields.append((title, _truncate_text(empty_value, 1024)))
-            continue
-
-        top_items = items[:max_items_per_section]
-        lines = [f"{idx}. {_compact_stat_line(item)}" for idx, item in enumerate(top_items, start=1)]
-        field_chunks = _chunk_lines(lines, max_chars=1024)
-
-        if meta_line and field_chunks:
-            first_budget = max(32, 1024 - (len(meta_line) + 1))
-            first_lines = _chunk_lines(lines, max_chars=first_budget)
-            if first_lines:
-                field_chunks = [f"{meta_line}\n{first_lines[0]}"]
-                remaining_lines = lines[len(first_lines[0].split("\n")):]
-                if remaining_lines:
-                    field_chunks.extend(_chunk_lines(remaining_lines, max_chars=1024))
-            else:
-                field_chunks = [_truncate_text(meta_line, 1024)]
-        elif meta_line and not field_chunks:
-            field_chunks = [_truncate_text(meta_line, 1024)]
-
-        shown = len(top_items)
-        remaining = max(0, min(max_items_per_section, len(items)) - shown)
-        if remaining > 0:
-            suffix = f"... +{remaining} more"
-            if field_chunks:
-                if len(field_chunks[-1]) + len("\n") + len(suffix) <= 1024:
-                    field_chunks[-1] = f"{field_chunks[-1]}\n{suffix}"
-            else:
-                field_chunks = [suffix]
-
-        for idx, chunk in enumerate(field_chunks):
-            field_name = title if idx == 0 else f"{title} (cont.)"
-            section_fields.append((field_name, _truncate_text(chunk, 1024)))
-
-    embeds: list[discord.Embed] = []
-    sections_per_embed = 2
-    current_embed: discord.Embed | None = None
-    sections_in_current = 0
-
-    def _new_embed(page_idx: int) -> discord.Embed:
-        page_title = "Daily Steam Radar" if page_idx == 1 else f"Daily Steam Radar (Page {page_idx})"
-        return discord.Embed(
-            title=page_title,
-            description=(
-                "Top 10 snapshot from Steam trends + your ingested social/review signals.\n"
-                f"Updated: {updated_label} ({updated_discord})"
-            ),
-            color=discord.Color.orange(),
-            timestamp=posted_at_utc,
-        )
-
-    page_idx = 1
-    current_embed = _new_embed(page_idx)
-    current_section_root: str | None = None
-
-    for field_name, field_value in section_fields:
-        is_new_section = not field_name.endswith("(cont.)")
-        if is_new_section and sections_in_current >= sections_per_embed:
-            embeds.append(current_embed)
-            page_idx += 1
-            current_embed = _new_embed(page_idx)
-            sections_in_current = 0
-
-        current_embed.add_field(name=field_name, value=field_value, inline=False)
-        if is_new_section:
-            sections_in_current += 1
-            current_section_root = field_name
-        elif current_section_root is None:
-            current_section_root = field_name
-
-    if generated_at:
-        footer_text = f"Generated at: {generated_at}"
-        if current_embed.footer and current_embed.footer.text:
-            current_embed.set_footer(text=f"{current_embed.footer.text} | {footer_text}")
+        if isinstance(items, list) and items:
+            lines = [f"{idx}. {_compact_stat_line(item)}" for idx, item in enumerate(items[:max_items_per_section], start=1)]
         else:
-            current_embed.set_footer(text=footer_text)
+            lines = ["No data yet"]
 
-    embeds.append(current_embed)
+        # Keep each section on its own page; split only if one section exceeds field limits.
+        first_budget = max(32, 1024 - (len(meta_line) + 1)) if meta_line else 1024
+        line_chunks = _chunk_lines(lines, max_chars=first_budget)
+        if not line_chunks:
+            line_chunks = ["No data yet"]
+
+        for chunk_idx, chunk in enumerate(line_chunks, start=1):
+            page_suffix = f" (Page {chunk_idx})" if len(line_chunks) > 1 else ""
+            embed = discord.Embed(
+                title=f"Daily Steam Radar - {title}{page_suffix}",
+                description=(
+                    "Top 10 snapshot from Steam trends + your ingested social/review signals.\n"
+                    f"Updated: {updated_label} ({updated_discord})"
+                ),
+                color=discord.Color.orange(),
+                timestamp=posted_at_utc,
+            )
+
+            field_value = chunk
+            if chunk_idx == 1 and meta_line:
+                field_value = f"{meta_line}\n{field_value}"
+
+            embed.add_field(name=title, value=_truncate_text(field_value, 1024), inline=False)
+
+            if generated_at:
+                embed.set_footer(text=f"Generated at: {generated_at}")
+
+            embeds.append(embed)
+
     return embeds
 
 
