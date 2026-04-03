@@ -43,3 +43,8 @@ Personalized web platform for indie game discovery using Steam, YouTube, and Red
 
 - GCP Cloud Run deployment guide for API and always-on Discord bot:
 	- `docs/gcp-api-bot-deploy.md`
+
+## GitHub CI/CD
+
+- GitHub Actions auto-deploy guide for Cloud Run (API + bot + ingest job):
+	- `docs/github-cicd-cloudrun.md`

@@ -1,0 +1,101 @@
+name: Deploy To Cloud Run
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  GCP_REGION: ${{ vars.GCP_REGION }}
+  AR_REPOSITORY: ${{ vars.AR_REPOSITORY }}
+  API_SERVICE_NAME: ${{ vars.API_SERVICE_NAME }}
+  BOT_SERVICE_NAME: ${{ vars.BOT_SERVICE_NAME }}
+  INGEST_JOB_NAME: ${{ vars.INGEST_JOB_NAME }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate required variables
+        run: |
+          test -n "${GCP_PROJECT_ID}" || (echo "Missing repo variable: GCP_PROJECT_ID" && exit 1)
+          test -n "${GCP_REGION}" || (echo "Missing repo variable: GCP_REGION" && exit 1)
+          test -n "${AR_REPOSITORY}" || (echo "Missing repo variable: AR_REPOSITORY" && exit 1)
+          test -n "${API_SERVICE_NAME}" || (echo "Missing repo variable: API_SERVICE_NAME" && exit 1)
+          test -n "${BOT_SERVICE_NAME}" || (echo "Missing repo variable: BOT_SERVICE_NAME" && exit 1)
+          test -n "${INGEST_JOB_NAME}" || (echo "Missing repo variable: INGEST_JOB_NAME" && exit 1)
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT_EMAIL }}
+
+      - name: Setup gcloud
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Artifact Registry auth
+        run: gcloud auth configure-docker ${GCP_REGION}-docker.pkg.dev --quiet
+
+      - name: Build and push API image
+        run: |
+          API_IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPOSITORY}/api:${GITHUB_SHA}"
+          docker build -f infra/docker/api.Dockerfile -t "${API_IMAGE}" .
+          docker push "${API_IMAGE}"
+          echo "API_IMAGE=${API_IMAGE}" >> $GITHUB_ENV
+
+      - name: Build and push Bot image
+        run: |
+          BOT_IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPOSITORY}/bot:${GITHUB_SHA}"
+          docker build -f infra/docker/bot.Dockerfile -t "${BOT_IMAGE}" .
+          docker push "${BOT_IMAGE}"
+          echo "BOT_IMAGE=${BOT_IMAGE}" >> $GITHUB_ENV
+
+      - name: Build and push Ingest image
+        run: |
+          INGEST_IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPOSITORY}/daily-ingest:${GITHUB_SHA}"
+          docker build -f infra/docker/ingestor.Dockerfile -t "${INGEST_IMAGE}" .
+          docker push "${INGEST_IMAGE}"
+          echo "INGEST_IMAGE=${INGEST_IMAGE}" >> $GITHUB_ENV
+
+      - name: Deploy API service
+        run: |
+          gcloud run deploy "${API_SERVICE_NAME}" \
+            --project "${GCP_PROJECT_ID}" \
+            --region "${GCP_REGION}" \
+            --image "${API_IMAGE}" \
+            --quiet
+
+      - name: Deploy Bot service
+        run: |
+          gcloud run deploy "${BOT_SERVICE_NAME}" \
+            --project "${GCP_PROJECT_ID}" \
+            --region "${GCP_REGION}" \
+            --image "${BOT_IMAGE}" \
+            --quiet
+
+      - name: Update Ingest job image
+        run: |
+          gcloud run jobs update "${INGEST_JOB_NAME}" \
+            --project "${GCP_PROJECT_ID}" \
+            --region "${GCP_REGION}" \
+            --image "${INGEST_IMAGE}" \
+            --quiet
+
+      - name: Summary
+        run: |
+          API_URL=$(gcloud run services describe "${API_SERVICE_NAME}" --project "${GCP_PROJECT_ID}" --region "${GCP_REGION}" --format='value(status.url)')
+          BOT_URL=$(gcloud run services describe "${BOT_SERVICE_NAME}" --project "${GCP_PROJECT_ID}" --region "${GCP_REGION}" --format='value(status.url)')
+          echo "API_URL=${API_URL}" >> $GITHUB_STEP_SUMMARY
+          echo "BOT_URL=${BOT_URL}" >> $GITHUB_STEP_SUMMARY
+          echo "INGEST_JOB=${INGEST_JOB_NAME}" >> $GITHUB_STEP_SUMMARY
