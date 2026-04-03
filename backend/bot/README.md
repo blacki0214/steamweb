@@ -4,12 +4,9 @@ Discord slash-command bot for the Indie Game Discovery API.
 
 ## Features
 
-- `/connect_steam`: get Steam connect URL
-- `/recommend`: request personalized recommendations
-- `/refine`: refine previous recommendation request
-- `/why`: explain why a game is recommended
-- `/feedback`: send feedback signal
-- `/unlink_steam`: unlink Steam account
+- Daily scheduled digest posts SteamDB-driven sections: trending games, hot releases, popular releases, new games, and releases today.
+- `/login`: login/connect Steam account; after successful link, bot posts your Steam profile details automatically in channel.
+- `/nenchoigi`: recommend games by genre/type, with Steam + Reddit review context and YouTube video links.
 
 ## Setup
 
@@ -39,16 +36,15 @@ Discord slash-command bot for the Indie Game Discovery API.
 7. Start backend API, then run bot:
    - `python bot.py`
 8. In Discord, test these commands:
-   - `/ping`
-   - `/connect_steam`
-   - `/recommend`
-   - `/feedback`
+   - `/login`
+   - `/nenchoigi`
 
 ## Environment Variables
 
 - `DISCORD_BOT_TOKEN`: Discord bot token
 - `DISCORD_CLIENT_ID`: Discord application client ID
-- `BACKEND_BASE_URL`: API base URL, default `http://localhost:8000/api/v1`
+- `BACKEND_BASE_URL`: API base URL (preferred), example `http://localhost:8001/api/v1`
+- `PUBLIC_API_BASE_URL`: optional fallback if `BACKEND_BASE_URL` is not set; bot appends `/api/v1`
 - `BOT_SERVICE_TOKEN`: backend service token used in `Authorization: Bearer ...`
 - `STEAM_REDIRECT_URI`: OAuth redirect URI used by connect flow
 - `DISCORD_GUILD_ID` (optional): for fast command sync in a single guild

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+import socket
+from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -9,13 +11,32 @@ import discord
 import httpx
 from discord import app_commands
 from discord.ext import commands
+from discord.errors import HTTPException as DiscordHTTPException, NotFound
 from dotenv import load_dotenv
 
 
-load_dotenv()
+load_dotenv(override=True)
 
 DISCORD_BOT_TOKEN = os.getenv("DISCORD_BOT_TOKEN", "")
-BACKEND_BASE_URL = os.getenv("BACKEND_BASE_URL", "http://localhost:8000/api/v1").rstrip("/")
+BOT_SINGLETON_PORT = int(os.getenv("BOT_SINGLETON_PORT", "8765"))
+_BOT_SINGLETON_SOCKET: socket.socket | None = None
+
+
+def resolve_backend_base_url() -> str:
+    explicit = (os.getenv("BACKEND_BASE_URL") or "").strip()
+    if explicit:
+        return explicit.rstrip("/")
+
+    public_api_base = (os.getenv("PUBLIC_API_BASE_URL") or "").strip().rstrip("/")
+    if public_api_base:
+        if public_api_base.endswith("/api/v1"):
+            return public_api_base
+        return f"{public_api_base}/api/v1"
+
+    return "http://localhost:8000/api/v1"
+
+
+BACKEND_BASE_URL = resolve_backend_base_url()
 BOT_SERVICE_TOKEN = os.getenv("BOT_SERVICE_TOKEN", "")
 STEAM_REDIRECT_URI = os.getenv("STEAM_REDIRECT_URI", "http://localhost:3000/auth/steam/callback")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID", "").strip()
@@ -35,6 +56,19 @@ GENRE_VALUES = [
     "action",
     "rpg",
     "puzzle",
+]
+
+DEFAULT_AUTOCOMPLETE_TAGS = [
+    "action",
+    "adventure",
+    "rpg",
+    "strategy",
+    "simulation",
+    "survival",
+    "puzzle",
+    "platformer",
+    "cozy",
+    "roguelike",
 ]
 
 MOOD_VALUES = [
@@ -117,23 +151,8 @@ class ApiClient:
     async def recommend(self, payload: dict[str, Any]) -> dict[str, Any]:
         return await self._request("POST", "/recommendations/generate", json=payload)
 
-    async def refine(self, payload: dict[str, Any]) -> dict[str, Any]:
-        return await self._request("POST", "/recommendations/refine", json=payload)
-
-    async def explain(self, discord_user_id: str, game_id: str) -> dict[str, Any]:
-        return await self._request(
-            "GET",
-            "/recommendations/explain",
-            params={"discord_user_id": discord_user_id, "game_id": game_id},
-        )
-
-    async def feedback(self, payload: dict[str, Any], idempotency_key: str) -> dict[str, Any]:
-        return await self._request(
-            "POST",
-            "/feedback",
-            json=payload,
-            headers={"Idempotency-Key": idempotency_key},
-        )
+    async def recommendation_tag_options(self, query: str, limit: int = 25) -> dict[str, Any]:
+        return await self._request("GET", "/recommendations/tag-options", params={"query": query, "limit": limit})
 
     async def unlink(self, discord_user_id: str) -> dict[str, Any]:
         return await self._request("POST", f"/users/{discord_user_id}/connections/steam/unlink")
@@ -151,14 +170,35 @@ class IndieBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
         self.api = api
         self.daily_digest_task: asyncio.Task[None] | None = None
+        self.tag_cache_task: asyncio.Task[None] | None = None
+        self._seen_interaction_ids: set[int] = set()
+        self._seen_interaction_order: deque[int] = deque(maxlen=2048)
+        self.recommendation_tag_cache: list[str] = []
+
+    def mark_interaction_seen(self, interaction_id: int) -> bool:
+        if interaction_id in self._seen_interaction_ids:
+            return False
+
+        if len(self._seen_interaction_order) == self._seen_interaction_order.maxlen:
+            oldest = self._seen_interaction_order.popleft()
+            self._seen_interaction_ids.discard(oldest)
+
+        self._seen_interaction_order.append(interaction_id)
+        self._seen_interaction_ids.add(interaction_id)
+        return True
 
     async def setup_hook(self) -> None:
+        await refresh_recommendation_tag_cache(self)
         if DISCORD_GUILD_ID:
             guild = discord.Object(id=int(DISCORD_GUILD_ID))
+            # Remove stale guild commands from previous iterations before re-sync.
+            self.tree.clear_commands(guild=guild)
             self.tree.copy_global_to(guild=guild)
             synced = await self.tree.sync(guild=guild)
             print(f"Synced {len(synced)} guild commands")
         else:
+            # Remove stale global commands from previous iterations before re-sync.
+            self.tree.clear_commands(guild=None)
             synced = await self.tree.sync()
             print(f"Synced {len(synced)} global commands")
 
@@ -204,8 +244,29 @@ def format_recommendation_text(data: dict[str, Any]) -> str:
         title = rec.get("title", "Unknown")
         game_id = rec.get("game_id", "-")
         score = rec.get("match_score", 0)
-        video = (rec.get("sources") or {}).get("youtube_video_url") or "N/A"
-        lines.append(f"- {title} ({game_id}) | score={score:.2f} | {reason} | video: {video}")
+        sources = rec.get("sources") or {}
+        video = sources.get("youtube_video_url") or "N/A"
+        store_url = sources.get("steam_store_url") or "N/A"
+
+        review_summary = sources.get("review_summary") or {}
+        steam_review = review_summary.get("steam") or {}
+        steam_label = steam_review.get("label") or "N/A"
+        steam_sample = steam_review.get("sample_size") or 0
+
+        reddit_review = review_summary.get("reddit") or {}
+        reddit_sentiment = reddit_review.get("sentiment_score")
+        reddit_highlights = reddit_review.get("highlights") or []
+        reddit_line = "N/A"
+        if isinstance(reddit_sentiment, (float, int)):
+            reddit_line = f"sentiment={float(reddit_sentiment):.2f}"
+        if isinstance(reddit_highlights, list) and reddit_highlights:
+            reddit_line = f"{reddit_line} | highlights: {', '.join(str(x) for x in reddit_highlights[:2])}"
+
+        lines.append(f"- {title} ({game_id}) | score={score:.2f} | {reason}")
+        lines.append(f"  Steam review: {steam_label} (n={steam_sample})")
+        lines.append(f"  Reddit review: {reddit_line}")
+        lines.append(f"  YouTube: {video}")
+        lines.append(f"  Store: {store_url}")
     return "\n".join(lines)
 
 
@@ -309,6 +370,16 @@ def _next_trigger_time(now: datetime) -> datetime:
     return trigger
 
 
+def _messageable_channel(
+    channel: discord.abc.GuildChannel | discord.abc.PrivateChannel | discord.Thread | None,
+) -> discord.abc.Messageable | None:
+    if channel is None:
+        return None
+    if isinstance(channel, discord.abc.Messageable):
+        return channel
+    return None
+
+
 async def post_daily_digest(bot_instance: "IndieBot") -> None:
     if not DAILY_DIGEST_CHANNEL_ID:
         return
@@ -326,7 +397,12 @@ async def post_daily_digest(bot_instance: "IndieBot") -> None:
     if channel is None:
         channel = await bot_instance.fetch_channel(channel_id)
 
-    await channel.send(content="Daily Steam update", embed=embed)
+    target = _messageable_channel(channel)
+    if target is None:
+        print(f"DAILY_DIGEST_CHANNEL_ID {channel_id} is not a messageable channel")
+        return
+
+    await target.send(content="Daily Steam update", embed=embed)
 
 
 async def run_daily_digest_loop(bot_instance: "IndieBot") -> None:
@@ -364,8 +440,12 @@ async def announce_after_steam_link(
                 if channel is None:
                     channel = await bot_instance.fetch_channel(channel_id)
 
+                target = _messageable_channel(channel)
+                if target is None:
+                    return
+
                 embed = build_steam_profile_embed(data)
-                await channel.send(
+                await target.send(
                     content=f"<@{discord_user_id}> connected Steam successfully!",
                     embed=embed,
                 )
@@ -473,19 +553,18 @@ bot = IndieBot(api=api_client)
 
 @bot.event
 async def on_ready() -> None:
+    print("BOT_BUILD: nenchoigi_no_defer_v2")
+    print(f"BOT_API_BASE_URL: {BACKEND_BASE_URL}")
     print(f"Logged in as {bot.user} (ID: {bot.user.id if bot.user else 'unknown'})")
+    if bot.tag_cache_task is None:
+        bot.tag_cache_task = bot.loop.create_task(run_tag_cache_loop(bot))
+        print("Recommendation tag cache loop started")
     if DAILY_DIGEST_ENABLED and DAILY_DIGEST_CHANNEL_ID and bot.daily_digest_task is None:
         bot.daily_digest_task = bot.loop.create_task(run_daily_digest_loop(bot))
         print("Daily digest loop started")
 
 
-@bot.tree.command(name="ping", description="Check if bot is alive")
-async def ping(interaction: discord.Interaction) -> None:
-    await interaction.response.send_message("pong", ephemeral=True)
-
-
-@bot.tree.command(name="connect_steam", description="Get your Steam connect link")
-async def connect_steam(interaction: discord.Interaction) -> None:
+async def _start_steam_login(interaction: discord.Interaction) -> None:
     await interaction.response.defer(ephemeral=True)
     try:
         guild_id = str(interaction.guild_id) if interaction.guild_id else None
@@ -522,65 +601,159 @@ async def connect_steam(interaction: discord.Interaction) -> None:
         await interaction.followup.send(f"Connect failed ({exc.status_code}): {exc.detail}", ephemeral=True)
 
 
-@bot.tree.command(name="login", description="Alias for Steam login/connect")
+@bot.tree.command(name="login", description="Login and connect your Steam account")
 async def login(interaction: discord.Interaction) -> None:
-    await connect_steam(interaction)
+    await _start_steam_login(interaction)
 
 
-@bot.tree.command(name="daily_digest_now", description="Post Steam daily digest now (server message)")
-async def daily_digest_now(interaction: discord.Interaction) -> None:
-    await interaction.response.defer(ephemeral=True)
+async def genre_autocomplete(
+    interaction: discord.Interaction,
+    current: str,
+) -> list[app_commands.Choice[str]]:
+    query = current.strip().lower()
+    items = bot.recommendation_tag_cache
+    if not items:
+        # Never return an empty list; allow manual value entry when cache is cold.
+        if query:
+            return [app_commands.Choice(name=query[:100], value=query)]
+        return [app_commands.Choice(name="action", value="action")]
+
+    if query:
+        filtered = [x for x in items if query in x.lower()]
+        if not filtered:
+            # Keep UX functional even when query has no direct matches.
+            filtered = [query, *items]
+    else:
+        filtered = items
+
+    choices: list[app_commands.Choice[str]] = []
+    for item in filtered[:25]:
+        value = str(item).strip()
+        if not value:
+            continue
+        # Discord label max length is 100.
+        label = value if len(value) <= 100 else value[:97] + "..."
+        choices.append(app_commands.Choice(name=label, value=value))
+    return choices
+
+
+async def refresh_recommendation_tag_cache(bot_instance: "IndieBot") -> None:
     try:
-        await post_daily_digest(bot)
-        await interaction.followup.send("Daily digest posted.", ephemeral=True)
-    except ApiError as exc:
-        await interaction.followup.send(
-            f"Daily digest failed ({exc.status_code}): {exc.detail}",
-            ephemeral=True,
-        )
-    except Exception as exc:
-        await interaction.followup.send(f"Daily digest failed: {exc}", ephemeral=True)
+        data = await bot_instance.api.recommendation_tag_options(query="", limit=100)
+    except Exception:
+        return
+
+    items = data.get("items", [])
+    if not isinstance(items, list):
+        return
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        value = str(item).strip()
+        key = value.lower()
+        if not value or key in seen:
+            continue
+        seen.add(key)
+        normalized.append(value)
+
+    merged: list[str] = []
+    seen: set[str] = set()
+    for value in [*normalized, *DEFAULT_AUTOCOMPLETE_TAGS]:
+        token = str(value).strip().lower()
+        if not token or token in seen:
+            continue
+        seen.add(token)
+        merged.append(token)
+
+    if merged:
+        bot_instance.recommendation_tag_cache = merged
 
 
-@bot.tree.command(name="recommend", description="Get indie game recommendations")
+async def run_tag_cache_loop(bot_instance: "IndieBot") -> None:
+    while True:
+        await asyncio.sleep(300)
+        try:
+            await refresh_recommendation_tag_cache(bot_instance)
+        except Exception:
+            pass
+
+
+def acquire_bot_singleton_lock() -> bool:
+    global _BOT_SINGLETON_SOCKET
+    try:
+        lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        lock_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        lock_socket.bind(("127.0.0.1", BOT_SINGLETON_PORT))
+        lock_socket.listen(1)
+        _BOT_SINGLETON_SOCKET = lock_socket
+        return True
+    except OSError:
+        return False
+
+
+@bot.tree.command(name="nenchoigi", description="Recommend games by genre/type with Steam+Reddit+YouTube context")
 @app_commands.describe(
-    genre="Pick a genre from the list",
-    mood="Pick a mood from the list",
+    genre="Pick a genre tag from DB",
+    mood="Pick type/mood from the list",
     session_minutes="How many minutes you can play",
     max_price="Maximum price in USD",
     top_n="How many recommendations (1-5)",
     relevance_mode="Recommendation mode: quality vs variety",
 )
-@app_commands.choices(genre=GENRE_CHOICES, mood=MOOD_CHOICES, relevance_mode=RELEVANCE_MODE_CHOICES)
-async def recommend(
+@app_commands.autocomplete(genre=genre_autocomplete)
+@app_commands.choices(mood=MOOD_CHOICES, relevance_mode=RELEVANCE_MODE_CHOICES)
+async def nenchoigi(
     interaction: discord.Interaction,
-    genre: app_commands.Choice[str] | None = None,
-    mood: app_commands.Choice[str] | None = None,
+    genre: str,
+    mood: app_commands.Choice[str],
     session_minutes: int = 60,
-    max_price: float = 20,
+    max_price: float = 20.0,
     top_n: int = 3,
     relevance_mode: app_commands.Choice[str] | None = None,
 ) -> None:
-    await interaction.response.defer(ephemeral=True)
+    if not bot.mark_interaction_seen(interaction.id):
+        return
+
+    try:
+        await _run_recommendation_flow(
+            interaction=interaction,
+            genre=genre,
+            mood=mood,
+            session_minutes=session_minutes,
+            max_price=max_price,
+            top_n=top_n,
+            relevance_mode=relevance_mode,
+        )
+    except DiscordHTTPException as exc:
+        if exc.code == 40060:
+            # Duplicate acknowledgement races should not crash the command handler.
+            return
+        raise
+
+
+async def _run_recommendation_flow(
+    *,
+    interaction: discord.Interaction,
+    genre: str,
+    mood: app_commands.Choice[str],
+    session_minutes: int,
+    max_price: float,
+    top_n: int,
+    relevance_mode: app_commands.Choice[str] | None,
+) -> None:
+    acked = await _ack_interaction(interaction)
+    if not acked:
+        return
 
     # Guardrails for static-typing compatibility and safe command input handling.
     session_minutes = max(15, min(240, session_minutes))
     max_price = max(0.0, min(100.0, max_price))
     top_n = max(1, min(5, top_n))
 
-    # If genre/mood are omitted, show interactive selectors so users can discover available options.
-    if genre is None or mood is None:
-        view = RecommendConfigView(api=bot.api, discord_user_id=str(interaction.user.id))
-        await interaction.followup.send(
-            "Choose your Genre and Mood from the dropdowns, then click **Recommend Now**.",
-            view=view,
-            ephemeral=True,
-        )
-        return
-
     payload = build_recommend_payload(
         discord_user_id=str(interaction.user.id),
-        genre=genre.value,
+        genre=genre,
         mood=mood.value,
         session_minutes=session_minutes,
         max_price=max_price,
@@ -590,148 +763,86 @@ async def recommend(
 
     try:
         data = await bot.api.recommend(payload)
-        await interaction.followup.send(format_recommendation_text(data), ephemeral=True)
+        await _update_ephemeral_result(interaction, format_recommendation_text(data))
     except ApiError as exc:
-        await interaction.followup.send(f"Recommend failed ({exc.status_code}): {exc.detail}", ephemeral=True)
+        await _update_ephemeral_result(interaction, f"Recommend failed ({exc.status_code}): {exc.detail}")
 
 
-@bot.tree.command(name="refine", description="Refine a previous recommendation request")
-@app_commands.describe(base_request_id="Previous request ID", exclude_game_id="Game ID to exclude")
-async def refine(interaction: discord.Interaction, base_request_id: str, exclude_game_id: str) -> None:
-    await interaction.response.defer(ephemeral=True)
-    payload = {
-        "discord_user_id": str(interaction.user.id),
-        "base_request_id": base_request_id,
-        "adjustments": {"exclude_game_ids": [exclude_game_id]},
-    }
-
-    try:
-        data = await bot.api.refine(payload)
-        lines = [f"Refined request: {data.get('request_id', 'unknown')}"]
-        for rec in data.get("recommendations", []):
-            lines.append(f"- {rec.get('title', 'Unknown')} ({rec.get('game_id', '-')})")
-        await interaction.followup.send("\n".join(lines), ephemeral=True)
-    except ApiError as exc:
-        await interaction.followup.send(f"Refine failed ({exc.status_code}): {exc.detail}", ephemeral=True)
-
-
-@bot.tree.command(name="why", description="Explain why a game is recommended")
-@app_commands.describe(game_id="Game ID, e.g. steam_1145360")
-async def why(interaction: discord.Interaction, game_id: str) -> None:
-    await interaction.response.defer(ephemeral=True)
-    try:
-        data = await bot.api.explain(str(interaction.user.id), game_id)
-        explanation = data.get("explanation", {})
-        reasons = explanation.get("human_reasons", [])
-        breakdown = explanation.get("score_breakdown", {})
-        msg = (
-            f"Why {game_id}:\n"
-            f"Reasons: {', '.join(reasons) if reasons else 'N/A'}\n"
-            f"Breakdown: {breakdown}"
-        )
-        await interaction.followup.send(msg, ephemeral=True)
-    except ApiError as exc:
-        await interaction.followup.send(f"Explain failed ({exc.status_code}): {exc.detail}", ephemeral=True)
-
-
-_feedback_choices = [
-    app_commands.Choice(name="like", value="like"),
-    app_commands.Choice(name="dislike", value="dislike"),
-    app_commands.Choice(name="already_played", value="already_played"),
-    app_commands.Choice(name="clicked_video", value="clicked_video"),
-    app_commands.Choice(name="clicked_store", value="clicked_store"),
-    app_commands.Choice(name="wishlist_added", value="wishlist_added"),
-]
-
-
-@bot.tree.command(name="feedback", description="Send recommendation feedback")
-@app_commands.describe(game_id="Game ID", feedback_type="Feedback type", request_id="Recommendation request ID")
-@app_commands.choices(feedback_type=_feedback_choices)
-async def feedback(
+async def _send_ephemeral(
     interaction: discord.Interaction,
-    game_id: str,
-    feedback_type: app_commands.Choice[str],
-    request_id: str,
-) -> None:
-    await interaction.response.defer(ephemeral=True)
+    content: str,
+    *,
+    view: discord.ui.View | None = None,
+) -> bool:
+    try:
+        if interaction.response.is_done():
+            if view is None:
+                await interaction.followup.send(content, ephemeral=True)
+            else:
+                await interaction.followup.send(content, view=view, ephemeral=True)
+        else:
+            if view is None:
+                await interaction.response.send_message(content, ephemeral=True)
+            else:
+                await interaction.response.send_message(content, view=view, ephemeral=True)
+        return True
+    except NotFound:
+        # Interaction expired before acknowledgement/follow-up.
+        return False
+    except DiscordHTTPException as exc:
+        # 40060: interaction already acknowledged; use follow-up channel.
+        if exc.code == 40060:
+            try:
+                if view is None:
+                    await interaction.followup.send(content, ephemeral=True)
+                else:
+                    await interaction.followup.send(content, view=view, ephemeral=True)
+                return True
+            except Exception:
+                return False
+        raise
+    except Exception as exc:
+        # Defensive fallback for Discord race conditions surfaced via non-exported exception wrappers.
+        if getattr(exc, "code", None) == 40060:
+            try:
+                if view is None:
+                    await interaction.followup.send(content, ephemeral=True)
+                else:
+                    await interaction.followup.send(content, view=view, ephemeral=True)
+                return True
+            except Exception:
+                return False
+        raise
 
-    payload = {
-        "discord_user_id": str(interaction.user.id),
-        "game_id": game_id,
-        "feedback_type": feedback_type.value,
-        "context": {"request_id": request_id},
-    }
-    idempotency_key = f"{interaction.user.id}:{game_id}:{feedback_type.value}:{request_id}"
+
+async def _ack_interaction(interaction: discord.Interaction) -> bool:
+    if interaction.response.is_done():
+        return True
 
     try:
-        data = await bot.api.feedback(payload, idempotency_key=idempotency_key)
-        await interaction.followup.send(data.get("message", "Feedback sent"), ephemeral=True)
-    except ApiError as exc:
-        await interaction.followup.send(f"Feedback failed ({exc.status_code}): {exc.detail}", ephemeral=True)
+        await interaction.response.defer(ephemeral=True)
+        return True
+    except NotFound:
+        return False
+    except DiscordHTTPException as exc:
+        if exc.code == 40060:
+            return True
+        raise
+    except Exception as exc:
+        if getattr(exc, "code", None) == 40060:
+            return True
+        raise
 
 
-@bot.tree.command(name="unlink_steam", description="Unlink your Steam account")
-async def unlink_steam(interaction: discord.Interaction) -> None:
-    await interaction.response.defer(ephemeral=True)
+async def _update_ephemeral_result(interaction: discord.Interaction, content: str) -> None:
+    if not interaction.response.is_done():
+        await _send_ephemeral(interaction, content)
+        return
+
     try:
-        data = await bot.api.unlink(str(interaction.user.id))
-        await interaction.followup.send(data.get("message", "Unlinked"), ephemeral=True)
-    except ApiError as exc:
-        await interaction.followup.send(f"Unlink failed ({exc.status_code}): {exc.detail}", ephemeral=True)
-
-
-@bot.tree.command(name="steam_profile", description="Show your linked Steam stats in server")
-async def steam_profile(interaction: discord.Interaction) -> None:
-    await interaction.response.defer(ephemeral=False)
-    try:
-        data = await bot.api.get_steam_connection(str(interaction.user.id))
-        if not data.get("is_connected"):
-            await interaction.followup.send(
-                "You have not linked Steam yet. Use /connect_steam first.",
-                ephemeral=False,
-            )
-            return
-
-        steam_id = str(data.get("steam_id") or "N/A")
-        persona = str(data.get("persona_name") or interaction.user.display_name)
-        profile_url = str(data.get("profile_url") or "")
-        avatar_url = str(data.get("avatar_url") or "")
-        total_games = data.get("total_games")
-        total_playtime = data.get("total_playtime_hours")
-        top_games = data.get("top_games") or []
-
-        embed = discord.Embed(
-            title=f"Steam Profile: {persona}",
-            description=f"Steam ID: `{steam_id}`",
-            color=discord.Color.blue(),
-        )
-
-        if profile_url:
-            embed.url = profile_url
-        if avatar_url:
-            embed.set_thumbnail(url=avatar_url)
-
-        embed.add_field(name="Total Games", value=str(total_games or "N/A"), inline=True)
-        embed.add_field(name="Playtime (hours)", value=str(total_playtime or "N/A"), inline=True)
-
-        if top_games:
-            top_lines = []
-            for game in top_games[:5]:
-                name = str(game.get("name") or "Unknown")
-                hours = game.get("hours") or 0
-                top_lines.append(f"- {name}: {hours}h")
-            embed.add_field(name="Top Played Games", value="\n".join(top_lines), inline=False)
-
-        synced_at = data.get("synced_at")
-        if synced_at:
-            embed.set_footer(text=f"Last synced: {synced_at}")
-
-        await interaction.followup.send(embed=embed, ephemeral=False)
-    except ApiError as exc:
-        await interaction.followup.send(
-            f"Steam profile failed ({exc.status_code}): {exc.detail}",
-            ephemeral=False,
-        )
+        await interaction.followup.send(content, ephemeral=True)
+    except Exception:
+        await _send_ephemeral(interaction, content)
 
 
 def validate_env() -> None:
@@ -747,4 +858,8 @@ def validate_env() -> None:
 
 if __name__ == "__main__":
     validate_env()
+    if not acquire_bot_singleton_lock():
+        raise RuntimeError(
+            f"Another bot instance is already running (lock port {BOT_SINGLETON_PORT} is in use)."
+        )
     bot.run(DISCORD_BOT_TOKEN)

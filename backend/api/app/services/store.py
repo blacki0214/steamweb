@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import random
+import re
 from datetime import UTC, datetime, timedelta
 from uuid import uuid4
 
@@ -63,6 +66,190 @@ def to_int(value: object, default: int = 0) -> int:
         except ValueError:
             return default
     return default
+
+
+def _normalize_label(value: str) -> str:
+    cleaned = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+    return re.sub(r"\s+", " ", cleaned)
+
+
+def _extract_tag_values(raw: object) -> list[str]:
+    values: list[str] = []
+
+    if raw is None:
+        return values
+
+    if isinstance(raw, list):
+        values.extend(str(item) for item in raw if str(item).strip())
+    elif isinstance(raw, tuple | set):
+        values.extend(str(item) for item in raw if str(item).strip())
+    elif isinstance(raw, str):
+        text_value = raw.strip()
+        if not text_value:
+            return values
+
+        if text_value.startswith("[") or text_value.startswith("{"):
+            try:
+                parsed = json.loads(text_value)
+                if isinstance(parsed, list):
+                    values.extend(str(item) for item in parsed if str(item).strip())
+                elif isinstance(parsed, dict):
+                    values.extend(str(key) for key in parsed.keys() if str(key).strip())
+                    values.extend(str(val) for val in parsed.values() if str(val).strip())
+                return values
+            except Exception:
+                pass
+
+        values.extend(part.strip() for part in re.split(r"[,;|]", text_value) if part.strip())
+    else:
+        text_value = str(raw).strip()
+        if text_value:
+            values.append(text_value)
+
+    return values
+
+
+def _build_normalized_tags(*raw_values: object) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        for value in _extract_tag_values(raw):
+            token = _normalize_label(value)
+            if token and token not in seen:
+                seen.add(token)
+                normalized.append(token)
+    return normalized
+
+
+MOOD_TAG_MAP: dict[str, list[str]] = {
+    "chill": ["casual", "simulation", "indie", "adventure", "free to play", "puzzle"],
+    "relaxing": ["casual", "simulation", "indie", "adventure", "free to play", "puzzle"],
+    "intense": ["action", "rpg", "strategy", "sports", "racing", "pvp"],
+    "dark": ["action", "rpg", "adventure", "survival", "atmospheric", "horror"],
+    "story rich": ["rpg", "adventure", "indie", "simulation", "visual novel", "narrative"],
+    "story-rich": ["rpg", "adventure", "indie", "simulation", "visual novel", "narrative"],
+    "co op": ["co-op", "coop", "multiplayer", "online co-op", "action", "adventure"],
+    "co-op": ["co-op", "coop", "multiplayer", "online co-op", "action", "adventure"],
+    "competitive": ["competitive", "pvp", "ranked", "esports", "sports", "racing", "action"],
+    "creative": ["simulation", "indie", "adventure", "sandbox", "building", "crafting"],
+}
+
+
+def _expand_mood_tokens(moods: list[str]) -> list[str]:
+    expanded: list[str] = []
+    seen: set[str] = set()
+
+    for mood in moods:
+        key = _normalize_label(mood)
+        if not key:
+            continue
+
+        candidates = [key, *MOOD_TAG_MAP.get(key, [])]
+        for candidate in candidates:
+            token = _normalize_label(candidate)
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            expanded.append(token)
+
+    return expanded
+
+
+NON_GAMEPLAY_TAGS: set[str] = {
+    "single player",
+    "singleplayer",
+    "multi player",
+    "multiplayer",
+    "co op",
+    "coop",
+    "online co op",
+    "online coop",
+    "lan co op",
+    "lan coop",
+    "shared split screen",
+    "sharedsplit screen",
+    "shared split screen co op",
+    "sharedsplit screen coop",
+    "cross platform multiplayer",
+    "crossplatform multiplayer",
+    "mmo",
+    "online pvp",
+    "pvp",
+    "online coop pvp",
+    "steam achievements",
+    "steamachievements",
+    "steam trading cards",
+    "steamtrading cards",
+    "steam workshop",
+    "steamworkshop",
+    "steam cloud",
+    "steamcloud",
+    "family sharing",
+    "familysharing",
+    "remote play on phone",
+    "remoteplay on phone",
+    "remote play on tablet",
+    "remoteplay on tablet",
+    "remote play on tv",
+    "remoteplay on tv",
+    "remote play together",
+    "remoteplay together",
+    "partial controller support",
+    "partial controller support",
+    "full controller support",
+    "tracked controller support",
+    "vr supported",
+    "includes level editor",
+    "camera comfort",
+    "adjustable text size",
+    "adjustable difficulty",
+    "custom volume controls",
+    "mouse only option",
+    "touch only option",
+    "subtitle options",
+    "stereo sound",
+    "save anytime",
+    "playable without timed input",
+    "color alternatives",
+    "stats",
+    "valve anti cheat enabled",
+}
+
+DEFAULT_DISCOVERY_TAGS: list[str] = [
+    "action",
+    "adventure",
+    "rpg",
+    "strategy",
+    "simulation",
+    "survival",
+    "puzzle",
+    "platformer",
+    "cozy",
+    "roguelike",
+]
+
+
+def _filter_gameplay_tags(tags: list[str]) -> list[str]:
+    filtered: list[str] = []
+    for tag in tags:
+        normalized = _normalize_label(tag)
+        if normalized and normalized not in NON_GAMEPLAY_TAGS:
+            filtered.append(normalized)
+    return filtered
+
+
+def _count_matches(wanted: list[str], tags: list[str]) -> int:
+    if not wanted or not tags:
+        return 0
+
+    hits = 0
+    for needle_raw in wanted:
+        needle = _normalize_label(needle_raw)
+        if not needle:
+            continue
+        if any(needle == tag or needle in tag for tag in tags):
+            hits += 1
+    return hits
 
 
 class PersistentStore:
@@ -386,98 +573,7 @@ class PersistentStore:
         )
         if live:
             return live
-
-        default_reasons = [
-            "Phu hop voi lich su the loai ban da choi",
-            "Phu hop voi intent session hien tai",
-            "Sentiment cong dong dang tich cuc",
-        ]
-
-        wanted_genres = [g.strip().lower() for g in (genres or []) if g.strip()]
-        wanted_moods = [m.strip().lower() for m in (moods or []) if m.strip()]
-        fallback_mood_tag_map: dict[str, list[str]] = {
-            "chill": ["cozy", "simulation", "casual"],
-            "intense": ["action", "roguelike", "metroidvania"],
-            "story-rich": ["rpg", "adventure"],
-            "co-op": ["multiplayer", "co-op"],
-            "competitive": ["pvp", "competitive", "action"],
-            "relaxing": ["cozy", "casual", "simulation"],
-            "dark": ["horror", "dark", "metroidvania"],
-            "creative": ["sandbox", "building", "simulation"],
-        }
-        mood_tags = [tag for mood in wanted_moods for tag in fallback_mood_tag_map.get(mood, [mood])]
-
-        strict_items: list[RecommendationItem] = []
-        medium_items: list[RecommendationItem] = []
-        broad_items: list[RecommendationItem] = []
-
-        for game in self.games:
-            if max_price is not None and game.price.amount > max_price:
-                continue
-
-            game_tags = [g.lower() for g in game.genres]
-            genre_hit = any(any(w in tag or tag in w for tag in game_tags) for w in wanted_genres)
-            mood_hit = any(any(m in tag or tag in m for tag in game_tags) for m in mood_tags)
-
-            has_filters = bool(wanted_genres or wanted_moods)
-            strict_match = True
-            medium_match = True
-            if has_filters:
-                if wanted_genres and wanted_moods:
-                    strict_match = genre_hit and mood_hit
-                    medium_match = genre_hit or mood_hit
-                elif wanted_genres:
-                    strict_match = genre_hit
-                    medium_match = genre_hit
-                elif wanted_moods:
-                    strict_match = mood_hit
-                    medium_match = mood_hit
-
-                # Keep fallback relevant: if user provided filters, skip total misses.
-                if not (genre_hit or mood_hit):
-                    continue
-
-            item = RecommendationItem(
-                rank=1,
-                game_id=game.game_id,
-                title=game.title,
-                price=game.price,
-                match_score=0.6,
-                reasons=default_reasons,
-                sources=RecommendationSources(
-                    steam_store_url=game.steam_store_url,
-                    youtube_video_url=game.youtube_video_url,
-                    review_summary=ReviewSummaryInfo(
-                        steam=SteamReviewInfo(label="Very Positive", sample_size=1200),
-                        reddit=RedditReviewInfo(
-                            sentiment_score=0.74,
-                            highlights=["combat muot", "replay value cao"],
-                        ),
-                    ),
-                ),
-            )
-
-            if strict_match:
-                tagged = item.model_copy(deep=True)
-                tagged.reasons = ["Relevance tier: strict", *tagged.reasons]
-                strict_items.append(tagged)
-            if medium_match:
-                tagged = item.model_copy(deep=True)
-                tagged.reasons = ["Relevance tier: medium", *tagged.reasons]
-                medium_items.append(tagged)
-
-            tagged = item.model_copy(deep=True)
-            tagged.reasons = ["Relevance tier: broad", *tagged.reasons]
-            broad_items.append(tagged)
-
-        selected = self._fill_tiered_items(
-            top_n=top_n,
-            strict_items=strict_items,
-            medium_items=medium_items,
-            broad_items=broad_items,
-            relevance_mode=relevance_mode,
-        )
-        return self._apply_freshness_filter(discord_user_id=discord_user_id, items=selected, top_n=top_n)
+        return []
 
     def _build_recommendations_from_database(
         self,
@@ -491,16 +587,7 @@ class PersistentStore:
         if SessionLocal.kw.get("bind") is None:
             return []
 
-        mood_tag_map: dict[str, list[str]] = {
-            "chill": ["casual", "cozy", "relaxing", "simulation"],
-            "intense": ["action", "souls-like", "difficult", "shooter"],
-            "story-rich": ["story rich", "narrative", "adventure", "rpg"],
-            "co-op": ["co-op", "online co-op", "multiplayer"],
-            "competitive": ["competitive", "pvp", "esports", "multiplayer"],
-            "relaxing": ["relaxing", "cozy", "casual"],
-            "dark": ["horror", "dark fantasy", "psychological horror"],
-            "creative": ["sandbox", "building", "crafting", "simulation"],
-        }
+        steamdb_signals = self._load_steamdb_signals(limit=5000)
 
         try:
             with SessionLocal() as db:
@@ -511,6 +598,7 @@ class PersistentStore:
                             g.id,
                             g.name,
                             COALESCE(g.short_description, g.description, '') AS description,
+                            g.normalized_gameplay_tags,
                             g.genres,
                             g.tags,
                             COALESCE(g.price_usd, 0) AS price_usd,
@@ -530,7 +618,12 @@ class PersistentStore:
                         LIMIT :limit
                         """
                     ),
-                    {"limit": max(top_n * 20, 100)},
+                    {
+                        "limit": min(
+                            max(top_n * (120 if genres else 20), 100),
+                            500,
+                        )
+                    },
                 ).mappings().all()
         except Exception:
             return []
@@ -538,9 +631,8 @@ class PersistentStore:
         if not rows:
             return []
 
-        wanted_genres = [g.strip().lower() for g in genres if g.strip()]
-        wanted_moods = [m.strip().lower() for m in moods if m.strip()]
-        mood_tags = [tag for mood in wanted_moods for tag in mood_tag_map.get(mood, [mood])]
+        wanted_genres = [_normalize_label(g) for g in genres if g.strip()]
+        wanted_moods = _expand_mood_tokens(moods)
 
         strict_items: list[RecommendationItem] = []
         medium_items: list[RecommendationItem] = []
@@ -554,16 +646,20 @@ class PersistentStore:
             if max_price is not None and not is_free and price > max_price:
                 continue
 
-            raw_genres = row.get("genres")
-            raw_tags = row.get("tags")
-            tags: list[str] = []
-            if isinstance(raw_genres, list):
-                tags.extend(str(t).lower() for t in raw_genres)
-            if isinstance(raw_tags, list):
-                tags.extend(str(t).lower() for t in raw_tags)
+            raw_normalized_tags = row.get("normalized_gameplay_tags")
+            all_tags = _build_normalized_tags(raw_normalized_tags)
+            tags = _filter_gameplay_tags(all_tags)
+            if not tags:
+                # Backward-compat for rows not normalized yet.
+                all_tags = _build_normalized_tags(row.get("tags"), row.get("genres"))
+                tags = _filter_gameplay_tags(all_tags)
 
-            genre_hits = sum(1 for g in wanted_genres if any(g in t or t in g for t in tags))
-            mood_hits = sum(1 for m in mood_tags if any(m in t or t in m for t in tags))
+            genre_hits = _count_matches(wanted_genres, tags)
+            mood_hits = _count_matches(wanted_moods, all_tags)
+
+            # Genre-selected requests should never return non-genre matches.
+            if wanted_genres and genre_hits == 0:
+                continue
 
             if (wanted_genres or wanted_moods) and (genre_hits + mood_hits == 0):
                 continue
@@ -571,12 +667,14 @@ class PersistentStore:
             total_reviews = to_int(row.get("total_reviews"), default=0)
             positive_reviews = to_int(row.get("positive_reviews"), default=0)
             popularity = max(0.0, min(float(positive_reviews) / 50000.0, 1.0))
+            steamdb_signal = steamdb_signals.get(game_id, {})
+            steamdb_boost = to_float(steamdb_signal.get("boost"), default=0.0)
 
             strict_match = True
             medium_match = True
             if wanted_genres and wanted_moods:
                 strict_match = genre_hits > 0 and mood_hits > 0
-                medium_match = genre_hits > 0 or mood_hits > 0
+                medium_match = genre_hits > 0
             elif wanted_genres:
                 strict_match = genre_hits > 0
                 medium_match = strict_match
@@ -584,9 +682,9 @@ class PersistentStore:
                 strict_match = mood_hits > 0
                 medium_match = strict_match
 
-            strict_score = (genre_hits * 0.6) + (mood_hits * 0.35) + (popularity * 0.05)
-            medium_score = (genre_hits * 0.55) + (mood_hits * 0.35) + (popularity * 0.10)
-            broad_score = (genre_hits * 0.45) + (mood_hits * 0.30) + (popularity * 0.25)
+            strict_score = (genre_hits * 0.62) + (mood_hits * 0.20) + (popularity * 0.08) + (steamdb_boost * 0.10)
+            medium_score = (genre_hits * 0.58) + (mood_hits * 0.20) + (popularity * 0.10) + (steamdb_boost * 0.12)
+            broad_score = (genre_hits * 0.50) + (mood_hits * 0.15) + (popularity * 0.15) + (steamdb_boost * 0.20)
 
             positive_rate = (positive_reviews / total_reviews) if total_reviews > 0 else 0.0
             review_desc = str(row.get("review_score_desc") or "Mixed")
@@ -603,6 +701,8 @@ class PersistentStore:
                     reasons.append("Matches your selected genre")
                 if mood_hits > 0:
                     reasons.append("Matches your selected mood")
+                if steamdb_boost > 0:
+                    reasons.append("Hot/Popular on SteamDB")
 
                 return RecommendationItem(
                     rank=1,
@@ -637,6 +737,7 @@ class PersistentStore:
             broad_items=broad_items,
             relevance_mode=relevance_mode,
         )
+        selected = self._shuffle_within_top_pool(selected, pool_size=10)
         return self._apply_freshness_filter(discord_user_id=discord_user_id, items=selected, top_n=top_n)
 
     def _build_recommendations_from_live_data(
@@ -648,40 +749,32 @@ class PersistentStore:
         max_price: float | None,
         relevance_mode: str,
     ) -> list[RecommendationItem]:
-        mood_tag_map: dict[str, list[str]] = {
-            "chill": ["casual", "cozy", "relaxing", "simulation"],
-            "intense": ["action", "souls-like", "difficult", "shooter"],
-            "story-rich": ["story rich", "narrative", "adventure", "rpg"],
-            "co-op": ["co-op", "online co-op", "multiplayer"],
-            "competitive": ["competitive", "pvp", "esports", "multiplayer"],
-            "relaxing": ["relaxing", "cozy", "casual"],
-            "dark": ["horror", "dark fantasy", "psychological horror"],
-            "creative": ["sandbox", "building", "crafting", "simulation"],
-        }
-
         try:
             candidates = steam_realtime_service.fetch_trending_games()
         except Exception:
             return []
 
-        wanted_genres = [g.strip().lower() for g in genres if g.strip()]
-        wanted_moods = [m.strip().lower() for m in moods if m.strip()]
-        mood_tags = [tag for mood in wanted_moods for tag in mood_tag_map.get(mood, [mood])]
+        wanted_genres = [_normalize_label(g) for g in genres if g.strip()]
+        wanted_moods = _expand_mood_tokens(moods)
 
         scored_strict: list[tuple[float, dict[str, object]]] = []
         scored_medium: list[tuple[float, dict[str, object]]] = []
         scored_broad: list[tuple[float, dict[str, object]]] = []
         for game in candidates:
-            tags = [str(tag).lower() for tag in game.get("tags", [])]
+            all_tags = _build_normalized_tags(game.get("tags", []))
+            tags = _filter_gameplay_tags(all_tags)
             if max_price is not None:
                 price = to_float(game.get("price", 0.0), default=0.0)
                 is_free = bool(game.get("is_free", False))
                 if not is_free and price > max_price:
                     continue
 
-            genre_hits = sum(1 for g in wanted_genres if any(g in t or t in g for t in tags))
-            mood_hits = sum(1 for m in mood_tags if any(m in t or t in m for t in tags))
+            genre_hits = _count_matches(wanted_genres, tags)
+            mood_hits = _count_matches(wanted_moods, all_tags)
             popularity = max(0.0, min(float(game.get("positive", 0) or 0) / 50000.0, 1.0))
+
+            if wanted_genres and genre_hits == 0:
+                continue
 
             if (wanted_genres or wanted_moods) and (genre_hits + mood_hits == 0):
                 # Never recommend fully unrelated games when filters are provided.
@@ -692,7 +785,7 @@ class PersistentStore:
             medium_match = True
             if wanted_genres and wanted_moods:
                 strict_match = genre_hits > 0 and mood_hits > 0
-                medium_match = genre_hits > 0 or mood_hits > 0
+                medium_match = genre_hits > 0
             elif wanted_genres:
                 strict_match = genre_hits > 0
                 medium_match = strict_match
@@ -701,17 +794,17 @@ class PersistentStore:
                 medium_match = strict_match
 
             # In strict mode, matching dominates ranking and popularity is a tiebreaker.
-            score = (genre_hits * 0.6) + (mood_hits * 0.35) + (popularity * 0.05)
+            score = (genre_hits * 0.75) + (mood_hits * 0.20) + (popularity * 0.05)
             if score <= 0:
                 continue
 
             if strict_match:
                 scored_strict.append((score, game))
             if medium_match:
-                medium_score = (genre_hits * 0.55) + (mood_hits * 0.35) + (popularity * 0.10)
+                medium_score = (genre_hits * 0.70) + (mood_hits * 0.20) + (popularity * 0.10)
                 scored_medium.append((medium_score, game))
 
-            broad_score = (genre_hits * 0.45) + (mood_hits * 0.3) + (popularity * 0.25)
+            broad_score = (genre_hits * 0.60) + (mood_hits * 0.15) + (popularity * 0.25)
             scored_broad.append((broad_score, game))
 
         scored_strict.sort(key=lambda x: x[0], reverse=True)
@@ -735,10 +828,10 @@ class PersistentStore:
             total_reviews = max(positive + negative, 1)
             positive_rate = positive / total_reviews
 
-            tags_raw = game.get("tags", [])
-            tags = [str(tag).lower() for tag in tags_raw] if isinstance(tags_raw, list) else []
-            genre_hits = sum(1 for g in wanted_genres if any(g in t or t in g for t in tags))
-            mood_hits = sum(1 for m in mood_tags if any(m in t or t in m for t in tags))
+            all_tags = _build_normalized_tags(game.get("tags", []))
+            tags = _filter_gameplay_tags(all_tags)
+            genre_hits = _count_matches(wanted_genres, tags)
+            mood_hits = _count_matches(wanted_moods, all_tags)
 
             reasons = [f"Relevance tier: {tier}", "Trending on Steam right now"]
             if genre_hits > 0:
@@ -783,6 +876,7 @@ class PersistentStore:
             broad_items=broad_items,
             relevance_mode=relevance_mode,
         )
+        selected = self._shuffle_within_top_pool(selected, pool_size=10)
         return self._apply_freshness_filter(discord_user_id=discord_user_id, items=selected, top_n=top_n)
 
     def _fill_tiered_items(
@@ -793,6 +887,8 @@ class PersistentStore:
         broad_items: list[RecommendationItem],
         relevance_mode: str,
     ) -> list[RecommendationItem]:
+        selection_cap = max(top_n, 10)
+
         if relevance_mode == "broad":
             tier_order = [broad_items, medium_items, strict_items]
         elif relevance_mode == "medium":
@@ -809,14 +905,101 @@ class PersistentStore:
                     continue
                 selected.append(item)
                 selected_ids.add(item.game_id)
-                if len(selected) >= top_n:
+                if len(selected) >= selection_cap:
                     break
-            if len(selected) >= top_n:
+            if len(selected) >= selection_cap:
                 break
 
         for idx, item in enumerate(selected, start=1):
             item.rank = idx
         return selected
+
+    def _shuffle_within_top_pool(self, items: list[RecommendationItem], pool_size: int = 10) -> list[RecommendationItem]:
+        if len(items) <= 1:
+            return items
+
+        head_count = max(1, min(pool_size, len(items)))
+        head = items[:head_count]
+        tail = items[head_count:]
+        random.shuffle(head)
+        return [*head, *tail]
+
+    def _load_steamdb_signals(self, limit: int = 5000) -> dict[int, dict[str, object]]:
+        if SessionLocal.kw.get("bind") is None:
+            return {}
+
+        try:
+            with SessionLocal() as db:
+                rows = db.execute(
+                    text(
+                        """
+                        WITH latest AS (
+                            SELECT MAX(snapshot_at) AS snapshot_at
+                            FROM steamdb_chart_snapshots
+                        ),
+                        s AS (
+                            SELECT
+                                app_id,
+                                chart_type,
+                                rank,
+                                COALESCE(players_current, 0) AS players_current
+                            FROM steamdb_chart_snapshots
+                            WHERE snapshot_at = (SELECT snapshot_at FROM latest)
+                              AND chart_type IN ('trending_games', 'hot_releases', 'popular_releases')
+                        )
+                        SELECT
+                            app_id,
+                            MIN(rank) AS best_rank,
+                            MAX(players_current) AS max_players,
+                            MAX(CASE WHEN chart_type = 'trending_games' THEN 1 ELSE 0 END) AS is_trending,
+                            MAX(CASE WHEN chart_type = 'hot_releases' THEN 1 ELSE 0 END) AS is_hot_release,
+                            MAX(CASE WHEN chart_type = 'popular_releases' THEN 1 ELSE 0 END) AS is_popular_release
+                        FROM s
+                        GROUP BY app_id
+                        ORDER BY MIN(rank) ASC
+                        LIMIT :limit
+                        """
+                    ),
+                    {"limit": max(100, min(limit, 20000))},
+                ).mappings().all()
+        except Exception:
+            return {}
+
+        if not rows:
+            return {}
+
+        signals: dict[int, dict[str, object]] = {}
+        max_players_overall = max((to_float(r.get("max_players"), default=0.0) for r in rows), default=0.0)
+
+        for row in rows:
+            app_id = to_int(row.get("app_id"), default=0)
+            if app_id <= 0:
+                continue
+
+            best_rank = max(1, to_int(row.get("best_rank"), default=9999))
+            rank_component = 1.0 / best_rank
+
+            players = to_float(row.get("max_players"), default=0.0)
+            players_component = (players / max_players_overall) if max_players_overall > 0 else 0.0
+
+            hot_bonus = 0.0
+            if bool(row.get("is_trending")):
+                hot_bonus += 0.35
+            if bool(row.get("is_hot_release")):
+                hot_bonus += 0.35
+            if bool(row.get("is_popular_release")):
+                hot_bonus += 0.30
+
+            boost = max(0.0, min((rank_component * 0.50) + (players_component * 0.30) + (hot_bonus * 0.20), 1.0))
+
+            signals[app_id] = {
+                "boost": boost,
+                "is_trending": bool(row.get("is_trending")),
+                "is_hot_release": bool(row.get("is_hot_release")),
+                "is_popular_release": bool(row.get("is_popular_release")),
+            }
+
+        return signals
 
     def _apply_freshness_filter(
         self,
@@ -894,6 +1077,65 @@ class PersistentStore:
             )
             db.commit()
             return True
+
+    def list_recommendation_tags(self, query: str = "", limit: int = 25) -> list[str]:
+        if SessionLocal.kw.get("bind") is None:
+            return DEFAULT_DISCOVERY_TAGS[: max(1, min(limit, 100))]
+
+        safe_limit = max(1, min(limit, 100))
+        q = query.strip().lower()
+
+        try:
+            with SessionLocal() as db:
+                rows = db.execute(
+                    text(
+                        """
+                        SELECT tag, SUM(weight) AS score
+                        FROM (
+                            SELECT lower(trim(unnest(COALESCE(g.genres, '{}')))) AS tag, 3 AS weight
+                            FROM games g
+                            UNION ALL
+                            SELECT lower(trim(unnest(COALESCE(g.normalized_gameplay_tags, '{}')))) AS tag, 2 AS weight
+                            FROM games g
+                            UNION ALL
+                            SELECT lower(trim(unnest(COALESCE(g.tags, '{}')))) AS tag, 1 AS weight
+                            FROM games g
+                        ) t
+                        WHERE tag IS NOT NULL
+                          AND tag <> ''
+                          AND (:query = '' OR lower(tag) LIKE '%' || :query || '%')
+                        GROUP BY tag
+                        ORDER BY score DESC, tag ASC
+                        LIMIT :fetch_limit
+                        """
+                    ),
+                    {"query": q, "fetch_limit": max(100, safe_limit * 4)},
+                ).mappings().all()
+        except Exception:
+            rows = []
+
+        ranked = [str(row["tag"]) for row in rows if row.get("tag")]
+        filtered = _filter_gameplay_tags(ranked)
+
+        if q:
+            filtered = [tag for tag in filtered if q in tag]
+
+        merged: list[str] = []
+        seen: set[str] = set()
+        for tag in [*filtered, *DEFAULT_DISCOVERY_TAGS]:
+            token = _normalize_label(tag)
+            if not token or token in seen:
+                continue
+            if q and q not in token:
+                continue
+            seen.add(token)
+            merged.append(token)
+            if len(merged) >= safe_limit:
+                break
+
+        if not merged and q:
+            return [q]
+        return merged[:safe_limit]
 
     def search_games(self, query: str, limit: int) -> list[GameSearchItem]:
         q = query.lower().strip()

@@ -29,6 +29,8 @@ def generate_recommendations(payload: RecommendationGenerateRequest) -> Recommen
         max_price,
         payload.options.relevance_mode,
     )
+    if not recommendations:
+        raise HTTPException(status_code=404, detail="No recommendations found")
     store.save_recommendation_snapshot(request_id=request_id, recommendations=recommendations)
     return RecommendationResponse(
         request_id=request_id,
@@ -83,3 +85,8 @@ def explain_recommendation(discord_user_id: str = Query(), game_id: str = Query(
             ],
         },
     )
+
+
+@router.get("/tag-options")
+def tag_options(query: str = Query(default=""), limit: int = Query(default=25, ge=1, le=100)) -> dict[str, list[str]]:
+    return {"items": store.list_recommendation_tags(query=query, limit=limit)}
