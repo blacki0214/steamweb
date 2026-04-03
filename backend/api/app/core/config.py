@@ -7,7 +7,7 @@ from pydantic import BaseModel
 
 class Settings(BaseModel):
     app_name: str = "Indie Game API"
-    bot_service_token: str = os.getenv("BOT_SERVICE_TOKEN", "dev-bot-token")
+    bot_service_token: str = (os.getenv("BOT_SERVICE_TOKEN", "dev-bot-token") or "").strip()
     public_api_base_url: str = os.getenv("PUBLIC_API_BASE_URL", "http://localhost:8001")
     steam_openid_endpoint: str = os.getenv(
         "STEAM_OPENID_ENDPOINT",

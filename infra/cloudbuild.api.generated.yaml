@@ -1,0 +1,11 @@
+steps:
+- name: gcr.io/cloud-builders/docker
+  args:
+  - build
+  - -f
+  - infra/docker/api.Dockerfile
+  - -t
+  - asia-southeast1-docker.pkg.dev/steam-491906/steamweb/api:latest
+  - .
+images:
+- asia-southeast1-docker.pkg.dev/steam-491906/steamweb/api:latest

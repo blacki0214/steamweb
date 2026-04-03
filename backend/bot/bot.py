@@ -3,8 +3,10 @@ from __future__ import annotations
 import asyncio
 import os
 import socket
+import threading
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import discord
@@ -37,13 +39,16 @@ def resolve_backend_base_url() -> str:
 
 
 BACKEND_BASE_URL = resolve_backend_base_url()
-BOT_SERVICE_TOKEN = os.getenv("BOT_SERVICE_TOKEN", "")
+BOT_SERVICE_TOKEN = (os.getenv("BOT_SERVICE_TOKEN", "") or "").strip()
 STEAM_REDIRECT_URI = os.getenv("STEAM_REDIRECT_URI", "http://localhost:3000/auth/steam/callback")
 DISCORD_GUILD_ID = os.getenv("DISCORD_GUILD_ID", "").strip()
 DAILY_DIGEST_CHANNEL_ID = os.getenv("DAILY_DIGEST_CHANNEL_ID", "").strip()
 DAILY_DIGEST_HOUR_UTC = int(os.getenv("DAILY_DIGEST_HOUR_UTC", "8"))
 DAILY_DIGEST_MINUTE_UTC = int(os.getenv("DAILY_DIGEST_MINUTE_UTC", "0"))
 DAILY_DIGEST_ENABLED = os.getenv("DAILY_DIGEST_ENABLED", "true").lower() == "true"
+ENABLE_HEALTH_SERVER = os.getenv("ENABLE_HEALTH_SERVER", "true").lower() == "true"
+HEALTH_SERVER_HOST = os.getenv("HEALTH_SERVER_HOST", "0.0.0.0")
+HEALTH_SERVER_PORT = int(os.getenv("PORT", "8080"))
 
 GENRE_VALUES = [
     "roguelike",
@@ -102,8 +107,9 @@ class ApiError(Exception):
 class ApiClient:
     def __init__(self, base_url: str, bot_service_token: str) -> None:
         self.base_url = base_url
+        safe_token = (bot_service_token or "").replace("\r", "").replace("\n", "").strip()
         self.headers = {
-            "Authorization": f"Bearer {bot_service_token}",
+            "Authorization": f"Bearer {safe_token}",
             "Content-Type": "application/json",
         }
 
@@ -337,11 +343,12 @@ def build_daily_digest_embed(payload: dict[str, Any]) -> discord.Embed:
     )
 
     sections = [
+        ("Most Played", "most_played_games"),
         ("Trending", "trending_games"),
         ("Hot Releases", "hot_releases"),
         ("Popular Releases", "popular_releases"),
         ("New This Week", "new_games_this_week"),
-        ("Release Today", "releases_today"),
+        ("Releases Today", "releases_today"),
     ]
 
     for title, key in sections:
@@ -606,6 +613,45 @@ async def login(interaction: discord.Interaction) -> None:
     await _start_steam_login(interaction)
 
 
+@bot.tree.command(name="digestnow", description="Post the Daily Steam digest now in this channel")
+@app_commands.default_permissions(administrator=True)
+@app_commands.guild_only()
+async def digestnow(interaction: discord.Interaction) -> None:
+    if not bot.mark_interaction_seen(interaction.id):
+        return
+
+    if interaction.guild is None:
+        await interaction.response.send_message("This command can only be used in a server.", ephemeral=True)
+        return
+
+    member = interaction.user
+    if not isinstance(member, discord.Member) or not member.guild_permissions.administrator:
+        await interaction.response.send_message("Only server admins can use /digestnow.", ephemeral=True)
+        return
+
+    acked = await _ack_interaction(interaction)
+    if not acked:
+        return
+
+    target = _messageable_channel(interaction.channel)
+    if target is None:
+        await _update_ephemeral_result(interaction, "Cannot post digest in this channel.")
+        return
+
+    try:
+        payload = await bot.api.get_daily_steam_digest(limit=10)
+    except ApiError as exc:
+        await _update_ephemeral_result(
+            interaction,
+            f"Digest fetch failed ({exc.status_code}): {exc.detail}",
+        )
+        return
+
+    embed = build_daily_digest_embed(payload)
+    await target.send(content="Daily Steam update (manual trigger)", embed=embed)
+    await _update_ephemeral_result(interaction, "Posted Daily Steam digest in this channel.")
+
+
 async def genre_autocomplete(
     interaction: discord.Interaction,
     current: str,
@@ -856,8 +902,39 @@ def validate_env() -> None:
         raise RuntimeError(f"Missing required env vars: {', '.join(missing)}")
 
 
+class _HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self) -> None:
+        if self.path == "/" or self.path == "/health":
+            payload = b'{"status":"ok"}'
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        self.send_response(404)
+        self.end_headers()
+
+    def log_message(self, format: str, *args: object) -> None:
+        # Keep bot logs focused on Discord/API events.
+        return
+
+
+def start_health_server() -> ThreadingHTTPServer | None:
+    if not ENABLE_HEALTH_SERVER:
+        return None
+
+    server = ThreadingHTTPServer((HEALTH_SERVER_HOST, HEALTH_SERVER_PORT), _HealthHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    print(f"Health server listening on {HEALTH_SERVER_HOST}:{HEALTH_SERVER_PORT}")
+    return server
+
+
 if __name__ == "__main__":
     validate_env()
+    _health_server = start_health_server()
     if not acquire_bot_singleton_lock():
         raise RuntimeError(
             f"Another bot instance is already running (lock port {BOT_SINGLETON_PORT} is in use)."

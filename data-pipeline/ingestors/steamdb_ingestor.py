@@ -123,20 +123,22 @@ def fetch_fallback_rows(limit_per_chart: int) -> list[dict]:
         for idx, item in enumerate(ranks, start=1):
             app_id = item.get("appid")
             current = item.get("peak_in_game")
-            out.append(
-                {
-                    "snapshot_at": snapshot_at,
-                    "chart_type": "most_played_fallback",
-                    "rank": int(item.get("rank") or idx),
-                    "app_id": int(app_id) if app_id is not None else None,
-                    "game_name": str(item.get("name") or f"app_{app_id}"),
-                    "players_current": int(current) if current is not None else None,
-                    "players_peak_24h": None,
-                    "players_all_time_peak": None,
-                    "raw_metrics": {"source": "steamcharts_api"},
-                    "source_url": MOST_PLAYED_URL,
-                }
-            )
+            base_row = {
+                "snapshot_at": snapshot_at,
+                "chart_type": "most_played_fallback",
+                "rank": int(item.get("rank") or idx),
+                "app_id": int(app_id) if app_id is not None else None,
+                "game_name": str(item.get("name") or f"app_{app_id}"),
+                "players_current": int(current) if current is not None else None,
+                "players_peak_24h": None,
+                "players_all_time_peak": None,
+                "raw_metrics": {"source": "steamcharts_api"},
+                "source_url": MOST_PLAYED_URL,
+            }
+            out.append(base_row)
+
+            # Derive a trending-style fallback from most played momentum when SteamDB blocks scraping.
+            out.append({**base_row, "chart_type": "trending_fallback", "rank": idx})
     except Exception as exc:
         logger.warning("Fallback most-played fetch failed: %s", exc)
 
@@ -151,20 +153,23 @@ def fetch_fallback_rows(limit_per_chart: int) -> list[dict]:
 
         for idx, item in enumerate(items, start=1):
             app_id = item.get("id")
-            out.append(
-                {
-                    "snapshot_at": snapshot_at,
-                    "chart_type": "top_sellers_fallback",
-                    "rank": idx,
-                    "app_id": int(app_id) if app_id is not None else None,
-                    "game_name": str(item.get("name") or f"app_{app_id}"),
-                    "players_current": None,
-                    "players_peak_24h": None,
-                    "players_all_time_peak": None,
-                    "raw_metrics": {"source": "featured_categories"},
-                    "source_url": FEATURED_CAT_URL,
-                }
-            )
+            base_row = {
+                "snapshot_at": snapshot_at,
+                "chart_type": "top_sellers_fallback",
+                "rank": idx,
+                "app_id": int(app_id) if app_id is not None else None,
+                "game_name": str(item.get("name") or f"app_{app_id}"),
+                "players_current": None,
+                "players_peak_24h": None,
+                "players_all_time_peak": None,
+                "raw_metrics": {"source": "featured_categories"},
+                "source_url": FEATURED_CAT_URL,
+            }
+            out.append(base_row)
+
+            # Mirror Steam store top sellers into explicit release-oriented buckets for digest rendering.
+            out.append({**base_row, "chart_type": "popular_releases_fallback"})
+            out.append({**base_row, "chart_type": "hot_releases_fallback"})
     except Exception as exc:
         logger.warning("Fallback top-sellers fetch failed: %s", exc)
 

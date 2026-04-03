@@ -38,3 +38,8 @@ Personalized web platform for indie game discovery using Steam, YouTube, and Red
 
 - GCP Cloud Run Job + Cloud Scheduler setup guide:
 	- `docs/gcp-daily-ingest.md`
+
+## Cloud API + Bot (24/24)
+
+- GCP Cloud Run deployment guide for API and always-on Discord bot:
+	- `docs/gcp-api-bot-deploy.md`

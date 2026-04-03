@@ -24,6 +24,8 @@ logger = logging.getLogger(__name__)
 def get_connection() -> PgConnection:
     """Return a new psycopg2 connection using environment variables."""
     database_url = os.getenv("DATABASE_URL", "").strip()
+    if database_url.startswith("postgresql+psycopg://"):
+        database_url = database_url.replace("postgresql+psycopg://", "postgresql://", 1)
     sslmode = os.getenv("POSTGRES_SSLMODE", "")
     sslrootcert = os.getenv("POSTGRES_SSLROOTCERT", "")
 

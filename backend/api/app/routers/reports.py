@@ -4,6 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, Depends
+import httpx
 from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -12,9 +13,13 @@ from app.db.session import SessionLocal
 
 router = APIRouter(dependencies=[Depends(require_bot_auth)])
 
+FEATURED_CAT_URL = "https://store.steampowered.com/api/featuredcategories"
+
 
 def _normalize_chart_type(value: str) -> str:
     value_l = value.lower()
+    if "most_played" in value_l or "most played" in value_l or "playing" in value_l or "concurrent" in value_l:
+        return "most_played"
     if "trending" in value_l:
         return "trending"
     if "hot" in value_l:
@@ -243,6 +248,47 @@ def _new_games_blocks(limit: int) -> tuple[list[dict[str, Any]], list[dict[str, 
     return enrich_release(in_week), enrich_release(today_list)
 
 
+def _fallback_new_games_blocks(limit: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    try:
+        resp = httpx.get(
+            FEATURED_CAT_URL,
+            params={"cc": "us", "l": "english"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        items = resp.json().get("new_releases", {}).get("items", [])
+    except Exception:
+        return [], []
+
+    out: list[dict[str, Any]] = []
+    for idx, item in enumerate(items[:limit], start=1):
+        app_id = item.get("id")
+        app_id_int = int(app_id) if isinstance(app_id, int) else None
+        name = str(item.get("name") or f"app_{app_id}")
+        out.append(
+            {
+                "rank": idx,
+                "app_id": app_id_int,
+                "name": name,
+                "release_date": "unknown",
+                "steam_store_url": (
+                    f"https://store.steampowered.com/app/{app_id_int}"
+                    if app_id_int is not None
+                    else None
+                ),
+                "steam_reviews": {},
+                "reddit": {},
+                "youtube": {},
+            }
+        )
+
+    if not out:
+        return [], []
+
+    # Steam store fallback does not provide exact release date reliably.
+    return out, out[: min(5, len(out))]
+
+
 @router.get("/daily-steam")
 def get_daily_steam_digest(limit: int = 10) -> dict[str, Any]:
     safe_limit = max(1, min(limit, 10))
@@ -264,20 +310,28 @@ def get_daily_steam_digest(limit: int = 10) -> dict[str, Any]:
 
     for raw_chart_type in chart_types:
         normalized = _normalize_chart_type(str(raw_chart_type))
-        if normalized not in {"trending", "hot_releases", "popular_releases"}:
+        if normalized not in {"most_played", "trending", "hot_releases", "popular_releases"}:
             continue
         if normalized in chart_rows:
             continue
         chart_rows[normalized] = _chart_block(str(raw_chart_type), safe_limit)
 
+    most_played_rows = chart_rows.get("most_played", [])
+    trending_rows = chart_rows.get("trending", []) or most_played_rows
+    popular_rows = chart_rows.get("popular_releases", [])
+    hot_rows = chart_rows.get("hot_releases", []) or popular_rows or most_played_rows
+
     new_this_week, releases_today = _new_games_blocks(safe_limit)
+    if not new_this_week and not releases_today:
+        new_this_week, releases_today = _fallback_new_games_blocks(safe_limit)
 
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "top_10": {
-            "trending_games": chart_rows.get("trending", []),
-            "hot_releases": chart_rows.get("hot_releases", []),
-            "popular_releases": chart_rows.get("popular_releases", []),
+            "most_played_games": most_played_rows,
+            "trending_games": trending_rows,
+            "hot_releases": hot_rows,
+            "popular_releases": popular_rows,
             "new_games_this_week": new_this_week,
             "releases_today": releases_today,
         },

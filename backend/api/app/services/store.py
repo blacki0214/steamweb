@@ -228,6 +228,45 @@ DEFAULT_DISCOVERY_TAGS: list[str] = [
     "roguelike",
 ]
 
+LOCAL_FALLBACK_GAMES: list[dict[str, object]] = [
+    {
+        "appid": 1794680,
+        "name": "Vampire Survivors",
+        "tags": ["roguelike", "action", "indie", "bullet hell", "survival"],
+        "price": 4.99,
+        "is_free": False,
+        "positive": 240000,
+        "negative": 9000,
+    },
+    {
+        "appid": 1942280,
+        "name": "Brotato",
+        "tags": ["roguelike", "action", "arena shooter", "indie"],
+        "price": 4.99,
+        "is_free": False,
+        "positive": 65000,
+        "negative": 4000,
+    },
+    {
+        "appid": 1337520,
+        "name": "Risk of Rain Returns",
+        "tags": ["roguelike", "action", "platformer", "co-op"],
+        "price": 14.99,
+        "is_free": False,
+        "positive": 19000,
+        "negative": 2000,
+    },
+    {
+        "appid": 548430,
+        "name": "Deep Rock Galactic",
+        "tags": ["action", "co-op", "shooter", "intense"],
+        "price": 9.99,
+        "is_free": False,
+        "positive": 270000,
+        "negative": 12000,
+    },
+]
+
 
 def _filter_gameplay_tags(tags: list[str]) -> list[str]:
     filtered: list[str] = []
@@ -573,6 +612,16 @@ class PersistentStore:
         )
         if live:
             return live
+
+        fallback = self._build_recommendations_from_local_fallback(
+            top_n=top_n,
+            genres=genres or [],
+            moods=moods or [],
+            max_price=max_price,
+            relevance_mode=relevance_mode,
+        )
+        if fallback:
+            return fallback
         return []
 
     def _build_recommendations_from_database(
@@ -739,6 +788,114 @@ class PersistentStore:
         )
         selected = self._shuffle_within_top_pool(selected, pool_size=10)
         return self._apply_freshness_filter(discord_user_id=discord_user_id, items=selected, top_n=top_n)
+
+    def _build_recommendations_from_local_fallback(
+        self,
+        top_n: int,
+        genres: list[str],
+        moods: list[str],
+        max_price: float | None,
+        relevance_mode: str,
+    ) -> list[RecommendationItem]:
+        wanted_genres = [_normalize_label(g) for g in genres if g.strip()]
+        wanted_moods = _expand_mood_tokens(moods)
+
+        scored_strict: list[tuple[float, RecommendationItem]] = []
+        scored_medium: list[tuple[float, RecommendationItem]] = []
+        scored_broad: list[tuple[float, RecommendationItem]] = []
+
+        for game in LOCAL_FALLBACK_GAMES:
+            price = to_float(game.get("price", 0.0), default=0.0)
+            is_free = bool(game.get("is_free", False))
+            if max_price is not None and not is_free and price > max_price:
+                continue
+
+            all_tags = _build_normalized_tags(game.get("tags", []))
+            tags = _filter_gameplay_tags(all_tags)
+
+            genre_hits = _count_matches(wanted_genres, tags)
+            mood_hits = _count_matches(wanted_moods, all_tags)
+            popularity = max(0.0, min(float(to_int(game.get("positive", 0), default=0)) / 50000.0, 1.0))
+
+            if wanted_genres and genre_hits == 0:
+                continue
+            if (wanted_genres or wanted_moods) and (genre_hits + mood_hits == 0):
+                continue
+
+            strict_match = True
+            medium_match = True
+            if wanted_genres and wanted_moods:
+                strict_match = genre_hits > 0 and mood_hits > 0
+                medium_match = genre_hits > 0
+            elif wanted_genres:
+                strict_match = genre_hits > 0
+                medium_match = strict_match
+            elif wanted_moods:
+                strict_match = mood_hits > 0
+                medium_match = strict_match
+
+            strict_score = (genre_hits * 0.75) + (mood_hits * 0.20) + (popularity * 0.05)
+            medium_score = (genre_hits * 0.70) + (mood_hits * 0.20) + (popularity * 0.10)
+            broad_score = (genre_hits * 0.60) + (mood_hits * 0.15) + (popularity * 0.25)
+
+            def make_item(score: float, tier: str) -> RecommendationItem:
+                appid = to_int(game.get("appid"), default=0)
+                title = str(game.get("name") or f"Steam Game {appid}")
+                positive = to_int(game.get("positive", 0), default=0)
+                negative = to_int(game.get("negative", 0), default=0)
+                total_reviews = max(positive + negative, 1)
+                positive_rate = positive / total_reviews
+                reasons = [f"Relevance tier: {tier}", "Data source: local fallback"]
+                if genre_hits > 0:
+                    reasons.append("Matches your selected genre")
+                if mood_hits > 0:
+                    reasons.append("Matches your selected mood")
+
+                return RecommendationItem(
+                    rank=1,
+                    game_id=f"steam_{appid}",
+                    title=title,
+                    price=PriceInfo(amount=0.0 if is_free else price, currency="USD", is_on_sale=False),
+                    match_score=max(0.1, min(score, 0.99)),
+                    reasons=reasons,
+                    sources=RecommendationSources(
+                        steam_store_url=f"https://store.steampowered.com/app/{appid}",
+                        youtube_video_url=f"https://www.youtube.com/results?search_query={title.replace(' ', '+')}+gameplay",
+                        review_summary=ReviewSummaryInfo(
+                            steam=SteamReviewInfo(
+                                label="Very Positive" if positive_rate >= 0.8 else "Mostly Positive",
+                                sample_size=total_reviews,
+                            ),
+                            reddit=RedditReviewInfo(
+                                sentiment_score=round(0.5 + (positive_rate * 0.45), 2),
+                                highlights=["offline fallback", "stable contract"],
+                            ),
+                        ),
+                    ),
+                )
+
+            if strict_match:
+                scored_strict.append((strict_score, make_item(strict_score, "strict")))
+            if medium_match:
+                scored_medium.append((medium_score, make_item(medium_score, "medium")))
+            scored_broad.append((broad_score, make_item(broad_score, "broad")))
+
+        scored_strict.sort(key=lambda x: x[0], reverse=True)
+        scored_medium.sort(key=lambda x: x[0], reverse=True)
+        scored_broad.sort(key=lambda x: x[0], reverse=True)
+
+        strict_items = [item for _, item in scored_strict[: max(top_n * 4, top_n)]]
+        medium_items = [item for _, item in scored_medium[: max(top_n * 4, top_n)]]
+        broad_items = [item for _, item in scored_broad[: max(top_n * 4, top_n)]]
+
+        selected = self._fill_tiered_items(
+            top_n=top_n,
+            strict_items=strict_items,
+            medium_items=medium_items,
+            broad_items=broad_items,
+            relevance_mode=relevance_mode,
+        )
+        return selected[: max(top_n, 1)]
 
     def _build_recommendations_from_live_data(
         self,
