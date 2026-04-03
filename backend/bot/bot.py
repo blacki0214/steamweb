@@ -346,9 +346,16 @@ def _fmt_price(steam: dict[str, Any]) -> str:
     return f"${price:.2f}"
 
 
+def _truncate_text(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    if limit <= 3:
+        return value[:limit]
+    return value[: limit - 3] + "..."
+
+
 def _compact_stat_line(item: dict[str, Any], max_players: int) -> str:
-    name = str(item.get("name") or "Unknown")
-    app_id = item.get("app_id")
+    name = _truncate_text(str(item.get("name") or "Unknown"), 34)
     players_current = item.get("players_current")
     steam = item.get("steam_reviews") or {}
     reddit = item.get("reddit") or {}
@@ -359,16 +366,11 @@ def _compact_stat_line(item: dict[str, Any], max_players: int) -> str:
     players_label = _fmt_players(players_current)
     players_chart = _players_bar(players_current, max_players)
     price_label = _fmt_price(steam)
+    price_compact = price_label if price_label in {"Free", "n/a"} else price_label
 
-    if isinstance(app_id, int):
-        return (
-            f"[{name}](https://store.steampowered.com/app/{app_id}) "
-            f"| players {players_label} [{players_chart}] | price {price_label} "
-            f"| steam {positive_reviews}/{total_reviews} | reddit {reddit_posts}"
-        )
     return (
-        f"{name} | players {players_label} [{players_chart}] | price {price_label} "
-        f"| steam {positive_reviews}/{total_reviews} | reddit {reddit_posts}"
+        f"{name} | p {players_label} [{players_chart}] | {price_compact} "
+        f"| s {positive_reviews}/{total_reviews} | r {reddit_posts}"
     )
 
 
@@ -406,13 +408,16 @@ def build_daily_digest_embed(payload: dict[str, Any], *, posted_at_utc: datetime
         ("Releases Today", "releases_today"),
     ]
 
+    max_items_per_section = 5
+    safe_field_char_limit = 850
+
     for title, key in sections:
         items = top_10.get(key) or []
         if not isinstance(items, list) or not items:
             embed.add_field(name=title, value="No data yet", inline=False)
             continue
 
-        top_items = items[:10]
+        top_items = items[:max_items_per_section]
         max_players = 0
         for item in top_items:
             try:
@@ -420,8 +425,21 @@ def build_daily_digest_embed(payload: dict[str, Any], *, posted_at_utc: datetime
             except (TypeError, ValueError):
                 continue
 
-        lines = [f"{idx}. {_compact_stat_line(item, max_players)}" for idx, item in enumerate(top_items, start=1)]
-        embed.add_field(name=title, value="\n".join(lines), inline=False)
+        lines: list[str] = []
+        for idx, item in enumerate(top_items, start=1):
+            lines.append(f"{idx}. {_compact_stat_line(item, max_players)}")
+
+        field_value = "\n".join(lines)
+        if len(field_value) > safe_field_char_limit:
+            field_value = _truncate_text(field_value, safe_field_char_limit)
+
+        remaining = len(items) - len(top_items)
+        if remaining > 0:
+            suffix = f"\n... +{remaining} more"
+            if len(field_value) + len(suffix) <= safe_field_char_limit:
+                field_value += suffix
+
+        embed.add_field(name=title, value=field_value, inline=False)
 
     if generated_at:
         embed.set_footer(text=f"Generated at: {generated_at}")
