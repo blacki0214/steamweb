@@ -70,29 +70,52 @@ docker compose --profile local-db up -d --build
 
 ## Product Roadmap
 
-### Phase 1: MVP Foundation
+### Phase 1: MVP Foundation (Completed)
 - [x] Steam metadata ingestion into Postgres.
 - [x] Reddit + YouTube context ingestion.
 - [x] FastAPI contracts and base recommendation logic.
 - [x] Web application foundation.
 
-### Phase 2: Discord Discovery Workflow
+### Phase 2: Discord Discovery Workflow (Completed)
 - [x] `/login` Steam account flow.
 - [x] `/nenchoigi` recommendation flow.
 - [x] Daily digest scheduler and `/digestnow` trigger.
 - [x] Admin-only permission guard for `/digestnow`.
 
-### Phase 3: Reliability and Operations
+### Phase 3: Reliability and Operations (In Progress)
 - [x] API and bot deployment on Cloud Run.
 - [x] Ingestion deployment via Cloud Run Job + Scheduler.
 - [x] GitHub CI/CD for build and deployment.
 - [ ] End-to-end post-deploy smoke tests.
 - [ ] Alerting for ingest and bot runtime failures.
+- [ ] SLO and error budget definition for API, bot, and ingest jobs.
 
-### Phase 4: Recommendation Quality
+### Phase 4: Recommendation Quality (Next)
 - [ ] Stronger preference modeling and feedback loops.
 - [ ] Metrics dashboard (CTR, save rate, replay rate).
 - [ ] Multilingual and locale-aware recommendation support.
+- [ ] Online A/B testing framework for ranking changes.
+
+### Phase 5: Website Product Expansion (Future)
+- [ ] Personalized home feed with explainable recommendation cards.
+- [ ] Advanced search and filter UX (tags, mood, session length, co-op).
+- [ ] Game detail page upgrades: richer review summaries, similar titles, creator highlights.
+- [ ] User account features: saved lists, follows, notification preferences.
+- [ ] Frontend performance targets (Core Web Vitals budget and Lighthouse CI checks).
+- [ ] Accessibility hardening to WCAG 2.2 AA (keyboard nav, focus states, contrast).
+- [ ] Internationalization pipeline for UI copy and locale formatting.
+
+### Phase 6: Security and Compliance Roadmap (Future)
+- [ ] Threat modeling for API, bot, data pipeline, and web attack surfaces.
+- [ ] Secrets hardening: Secret Manager-first policy and automatic key rotation.
+- [ ] AuthN/AuthZ upgrades: role-based access controls and least-privilege service accounts.
+- [ ] API protections: strict input validation, rate limiting, and abuse prevention.
+- [ ] Dependency and container security: SCA + image scanning in CI with fail gates.
+- [ ] Supply-chain security: signed builds, provenance (SLSA-aligned), and artifact verification.
+- [ ] Data protection: encryption in transit/at rest, PII minimization, and retention policy.
+- [ ] Observability for security: centralized audit logs and anomaly alerting.
+- [ ] Incident response readiness: runbooks, on-call paths, and recovery drills.
+- [ ] Periodic external testing: pentest and remediation tracking cadence.
 
 ## Deployment Documentation
 
