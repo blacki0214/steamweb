@@ -30,13 +30,15 @@ from dotenv import load_dotenv
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
-from ingestors.utils import db_cursor, rate_sleep
+from ingestors.utils import db_cursor, env_flag, env_int, rate_sleep
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 SEARCH_QUERY    = "{game_name} gameplay"   # query template
+FREE_TIER_MODE = env_flag("FREE_TIER_MODE", default=False)
+DAILY_QUOTA_BUFFER = env_int("YOUTUBE_DAILY_QUOTA_BUFFER", 1000 if FREE_TIER_MODE else 500)
 
 
 # ──────────────────────────────────────────────
@@ -205,7 +207,7 @@ def run(
 
     # Quota tracker: search costs 100 units, stats costs 1 unit
     quota_used = 0
-    DAILY_QUOTA = 9_500   # leave 500 units buffer
+    DAILY_QUOTA = max(0, 10_000 - DAILY_QUOTA_BUFFER)
     success_count = 0
     skip_count = 0
 

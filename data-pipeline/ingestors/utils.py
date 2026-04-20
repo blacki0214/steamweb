@@ -21,6 +21,24 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off"}
+
+
+def env_int(name: str, default: int) -> int:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; using default=%s", name, value, default)
+        return default
+
+
 def get_connection() -> PgConnection:
     """Return a new psycopg2 connection using environment variables."""
     database_url = os.getenv("DATABASE_URL", "").strip()
@@ -88,3 +106,18 @@ def db_cursor() -> Iterator[psycopg2.extras.RealDictCursor]:
 def rate_sleep(seconds: float = 1.5) -> None:
     """Polite delay between API calls."""
     time.sleep(seconds)
+
+
+def apply_sql_file(path: str) -> None:
+    """Execute a SQL file as a single transaction."""
+    with open(path, "r", encoding="utf-8") as handle:
+        sql = handle.read().strip()
+
+    if not sql:
+        logger.info("SQL file is empty: %s", path)
+        return
+
+    with db_cursor() as cur:
+        cur.execute(sql)
+
+    logger.info("Applied SQL file: %s", path)

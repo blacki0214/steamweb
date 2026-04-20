@@ -28,7 +28,7 @@ from typing import Optional
 import requests
 from dotenv import load_dotenv
 
-from ingestors.utils import db_cursor, rate_sleep
+from ingestors.utils import db_cursor, env_flag, env_int, rate_sleep
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -40,10 +40,11 @@ APPREVIEWS_URL    = "https://store.steampowered.com/appreviews/{app_id}"
 MOST_PLAYED_URL   = "https://api.steampowered.com/ISteamChartsService/GetMostPlayedGames/v1/"
 FEATURED_CAT_URL  = "https://store.steampowered.com/api/featuredcategories"
 STORE_SEARCH_URL  = "https://store.steampowered.com/search/results"
-REVIEWS_PER_GAME  = 20
-HOT_GAMES_LIMIT   = 50   # how many top-played games to pull
+FREE_TIER_MODE    = env_flag("FREE_TIER_MODE", default=False)
+REVIEWS_PER_GAME  = env_int("STEAM_REVIEWS_PER_GAME", 5 if FREE_TIER_MODE else 20)
+HOT_GAMES_LIMIT   = env_int("STEAM_HOT_GAMES_LIMIT", 25 if FREE_TIER_MODE else 50)
 INDIE_TAG_ID      = 492  # Steam tag ID for "Indie"
-INDIE_LIMIT       = 50   # how many indie games to fetch dynamically
+INDIE_LIMIT       = env_int("STEAM_INDIE_LIMIT", 25 if FREE_TIER_MODE else 50)
 
 
 # ──────────────────────────────────────────────

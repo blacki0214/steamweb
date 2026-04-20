@@ -1,127 +1,260 @@
-﻿# Indie Game Discovery Platform
+# SteamWeb
 
-Data-driven discovery platform for indie games powered by Steam, SteamDB, Reddit, and YouTube signals.
+SteamWeb is a game discovery platform built to help players find what to play faster.
+It combines Steam catalog data, SteamDB trend signals, Reddit discussion, YouTube gameplay context, and lightweight personalization into two product surfaces:
 
-## Executive Summary
+- a discovery website
+- a Discord recommendation workflow
 
-Players often discover games from fragmented sources and miss relevant indie titles.
-This project centralizes discovery data, builds recommendation logic, and exposes the experience through:
+The project started as a cloud-hosted API + Discord bot + ingestion pipeline stack and is now being reshaped toward a more cost-efficient deployment model that can run on free-tier infrastructure.
 
-- a React web application,
-- a FastAPI backend,
-- a Discord bot workflow.
+## Product Vision
+
+Players often discover games through fragmented, noisy channels:
+
+- Steam charts show what is popular, but not why
+- social platforms show opinions, but not a clean recommendation path
+- trailers are useful, but disconnected from gameplay fit
+- many players know the mood they want, but not the title
+
+SteamWeb solves this by turning raw discovery signals into a focused recommendation experience:
+
+- show trending, hot, and new-release games clearly
+- help users filter by genre, mood, budget, and session length
+- explain recommendations with review and trend context
+- make discovery available both on the web and inside Discord
 
 ## Core Capabilities
 
-- Steam account connection via Discord `/login`.
-- Personalized recommendations via `/nenchoigi` with multi-source context.
-- Automated daily Steam digest plus admin-triggered `/digestnow`.
-- Cloud-native runtime with API, bot, and ingestion jobs on GCP.
+### Discovery Feed
 
-## Current Production Status
+- trending Steam titles
+- hot releases and popular releases
+- releases today and recent releases
+- compact game metadata with store links and supporting context
 
-- API service deployed to Cloud Run.
-- Discord bot deployed to Cloud Run (always-on configuration).
-- Ingestion pipeline deployed as Cloud Run Job + Cloud Scheduler.
-- GitHub Actions CI/CD configured for deploy on push to `main`.
+### Personalized Recommendation
 
-## System Architecture
+- genre and mood-driven recommendations
+- session-length and budget-aware filtering
+- explainable recommendation reasons and scores
+- freshness handling to avoid showing the same titles repeatedly
 
-- Data Layer: Steam, SteamDB, Reddit, YouTube -> PostgreSQL.
-- Processing Layer: ingestion, normalization, sentiment, ranking, semantic search.
-- Experience Layer: React web app + Discord command flow.
+### Discord Workflow
 
-See details in `docs/architecture.md`.
+- `/login` to connect a Steam account
+- `/nenchoigi` to request game recommendations
+- automated daily digest posting
+- admin-triggered digest posting via `/digestnow`
+
+### Data Foundation
+
+- Steam metadata and review ingestion
+- SteamDB chart snapshots
+- Reddit post and comment ingestion
+- YouTube gameplay video ingestion
+- normalized gameplay tags for stronger matching
+
+## Current State
+
+### Working Today
+
+- FastAPI backend
+- Discord bot workflow
+- Steam connect flow
+- recommendation generation endpoint
+- daily Steam digest generation
+- data ingestion pipeline
+- Supabase/Postgres-compatible schema
+
+### In Progress
+
+- free-tier operating mode for the ingestion pipeline
+- database retention controls for low-cost hosting
+- migration path toward Cloudflare-style serverless deployment
+
+### Not Yet Finished
+
+- fully data-driven website homepage
+- production-grade game detail pages
+- stronger web-facing discovery API contracts
+- cleaner separation of ranking logic from storage logic
 
 ## Repository Structure
 
-| Path | Description |
+| Path | Purpose |
 | --- | --- |
-| `apps/web` | React frontend (Vite + TypeScript) |
-| `backend/api` | FastAPI services and endpoints |
-| `backend/bot` | Discord bot commands and schedulers |
-| `data-pipeline` | Ingestion and NLP processing jobs |
-| `database` | SQL init scripts, migrations, seed data |
-| `ml` | Recommendation and semantic search modules |
-| `infra` | Docker, compose, deployment scripts |
-| `shared` | Shared contracts and constants |
-| `docs` | Architecture, roadmap, deployment guides |
+| `apps/web` | React + Vite frontend |
+| `backend/api` | FastAPI application and routers |
+| `backend/bot` | Discord bot runtime and command handlers |
+| `data-pipeline` | Steam, SteamDB, Reddit, and YouTube ingestion jobs |
+| `database` | Bootstrap schema, migrations, maintenance SQL |
+| `docs` | Product, architecture, roadmap, and deployment docs |
+| `infra` | Docker, compose, and deployment scripts |
+| `ml` | Recommendation and semantic-search experiments |
+| `shared` | Shared constants and contracts |
+
+## Architecture Summary
+
+### Experience Layer
+
+- React web application
+- Discord command workflow
+
+### Application Layer
+
+- FastAPI endpoints for auth, discovery, recommendations, reviews, reports, and feedback
+- bot-side API client and scheduled digest flow
+
+### Data Layer
+
+- PostgreSQL / Supabase
+- game metadata
+- trend snapshots
+- user profile state
+- recommendation snapshots and feedback events
+
+### Ingestion Layer
+
+- Steam public APIs
+- SteamDB chart scraping with fallback sources
+- Reddit collection
+- YouTube gameplay lookup
+
+See [docs/architecture.md](D:\secret\steamweb\docs\architecture.md) for the fuller system view.
+
+## Database Strategy
+
+The repository now includes the full product schema, not just the early bootstrap tables.
+
+### Fresh Deployment
+
+For a brand-new Postgres or Supabase database:
+
+1. Run [001_extensions.sql](D:\secret\steamweb\database\init\001_extensions.sql)
+2. Run [002_schema.sql](D:\secret\steamweb\database\init\002_schema.sql)
+
+### Existing Deployment
+
+For an existing database:
+
+1. Apply pending migrations from `database/migrations`
+2. Use [009_app_runtime_tables.sql](D:\secret\steamweb\database\migrations\009_app_runtime_tables.sql) if runtime tables were previously ORM-only
+
+### Free-Tier Operation
+
+For low-cost hosting, use the retention policy documented in [docs/free-tier-database-plan.md](D:\secret\steamweb\docs\free-tier-database-plan.md) and the cleanup SQL at [001_free_tier_retention.sql](D:\secret\steamweb\database\maintenance\001_free_tier_retention.sql).
 
 ## Local Development
 
-1. Configure environment values from `.env.example` files.
-2. Set `DATABASE_URL` (Supabase Postgres is recommended).
-3. Start services with Docker Compose.
-4. Run ingest jobs to seed and refresh data.
+### Prerequisites
 
-### Docker Compose (Supabase)
+- Python 3.11+
+- Node.js 18+
+- PostgreSQL or Supabase connection
+
+### Environment
+
+Copy or adapt:
+
+- `.env.example`
+
+Required core variables:
+
+- `DATABASE_URL`
+- `BOT_SERVICE_TOKEN`
+- `DISCORD_BOT_TOKEN`
+- `DISCORD_CLIENT_ID`
+- `PUBLIC_API_BASE_URL`
+
+Optional free-tier controls:
+
+- `FREE_TIER_MODE=true`
+- `DAILY_RUN_RETENTION=true`
+- `STEAM_REVIEWS_PER_GAME=5`
+- `STEAM_HOT_GAMES_LIMIT=25`
+- `STEAM_INDIE_LIMIT=25`
+- `REDDIT_POSTS_PER_GAME=3`
+- `REDDIT_COMMENTS_PER_POST=3`
+- `YOUTUBE_DAILY_QUOTA_BUFFER=1000`
+
+### Run With Docker Compose
+
+Supabase/external Postgres:
 
 ```bash
 cd infra/compose
 docker compose up -d --build
 ```
 
-### Docker Compose (Optional Local DB)
+Optional local Postgres profile:
 
 ```bash
 cd infra/compose
 docker compose --profile local-db up -d --build
 ```
 
+### Run Key Services Manually
+
+Backend API:
+
+```bash
+cd backend/api
+python -m uvicorn app.main:app --reload --port 8000
+```
+
+Discord bot:
+
+```bash
+cd backend/bot
+python bot.py
+```
+
+Daily compact ingest:
+
+```bash
+cd data-pipeline
+python -m jobs.run_daily_update
+```
+
+## Deployment Direction
+
+### Current Hosted Model
+
+- backend API on Cloud Run
+- Discord bot on Cloud Run
+- data jobs on Cloud Run Job + Scheduler
+
+### Target Cost-Efficient Model
+
+- website on Cloudflare Pages
+- API and Discord interactions on Cloudflare Workers
+- Supabase free-tier Postgres with retention
+- scheduled refresh with short, bounded jobs
+
+This direction reduces the need for always-on infrastructure while preserving the core product experience.
+
 ## Product Roadmap
 
-### Phase 1: MVP Foundation (Completed)
-- [x] Steam metadata ingestion into Postgres.
-- [x] Reddit + YouTube context ingestion.
-- [x] FastAPI contracts and base recommendation logic.
-- [x] Web application foundation.
+See the maintained roadmap in [docs/mvp-roadmap.md](D:\secret\steamweb\docs\mvp-roadmap.md).
 
-### Phase 2: Discord Discovery Workflow (Completed)
-- [x] `/login` Steam account flow.
-- [x] `/nenchoigi` recommendation flow.
-- [x] Daily digest scheduler and `/digestnow` trigger.
-- [x] Admin-only permission guard for `/digestnow`.
+Top priorities now:
 
-### Phase 3: Reliability and Operations (In Progress)
-- [x] API and bot deployment on Cloud Run.
-- [x] Ingestion deployment via Cloud Run Job + Scheduler.
-- [x] GitHub CI/CD for build and deployment.
-- [ ] End-to-end post-deploy smoke tests.
-- [ ] Alerting for ingest and bot runtime failures.
-- [ ] SLO and error budget definition for API, bot, and ingest jobs.
+1. finish the free-tier migration path
+2. make the website data-driven
+3. cleanly separate recommendation ranking from storage
+4. keep the database compact through retention and smaller ingestion defaults
 
-### Phase 4: Recommendation Quality (Next)
-- [ ] Stronger preference modeling and feedback loops.
-- [ ] Metrics dashboard (CTR, save rate, replay rate).
-- [ ] Multilingual and locale-aware recommendation support.
-- [ ] Online A/B testing framework for ranking changes.
+## Documentation Index
 
-### Phase 5: Website Product Expansion (Future)
-- [ ] Personalized home feed with explainable recommendation cards.
-- [ ] Advanced search and filter UX (tags, mood, session length, co-op).
-- [ ] Game detail page upgrades: richer review summaries, similar titles, creator highlights.
-- [ ] User account features: saved lists, follows, notification preferences.
-- [ ] Frontend performance targets (Core Web Vitals budget and Lighthouse CI checks).
-- [ ] Accessibility hardening to WCAG 2.2 AA (keyboard nav, focus states, contrast).
-- [ ] Internationalization pipeline for UI copy and locale formatting.
-
-### Phase 6: Security and Compliance Roadmap (Future)
-- [ ] Threat modeling for API, bot, data pipeline, and web attack surfaces.
-- [ ] Secrets hardening: Secret Manager-first policy and automatic key rotation.
-- [ ] AuthN/AuthZ upgrades: role-based access controls and least-privilege service accounts.
-- [ ] API protections: strict input validation, rate limiting, and abuse prevention.
-- [ ] Dependency and container security: SCA + image scanning in CI with fail gates.
-- [ ] Supply-chain security: signed builds, provenance (SLSA-aligned), and artifact verification.
-- [ ] Data protection: encryption in transit/at rest, PII minimization, and retention policy.
-- [ ] Observability for security: centralized audit logs and anomaly alerting.
-- [ ] Incident response readiness: runbooks, on-call paths, and recovery drills.
-- [ ] Periodic external testing: pentest and remediation tracking cadence.
-
-## Deployment Documentation
-
-- Daily ingestion on GCP: `docs/gcp-daily-ingest.md`
-- API and bot deployment: `docs/gcp-api-bot-deploy.md`
-- GitHub Actions CI/CD setup: `docs/github-cicd-cloudrun.md`
+- [Architecture](D:\secret\steamweb\docs\architecture.md)
+- [Roadmap](D:\secret\steamweb\docs\mvp-roadmap.md)
+- [API Spec](D:\secret\steamweb\docs\api-spec.md)
+- [Free-Tier Database Plan](D:\secret\steamweb\docs\free-tier-database-plan.md)
+- [Database README](D:\secret\steamweb\database\README.md)
+- [GCP Daily Ingest Deployment](D:\secret\steamweb\docs\gcp-daily-ingest.md)
+- [GCP API/Bot Deployment](D:\secret\steamweb\docs\gcp-api-bot-deploy.md)
+- [GitHub CI/CD on Cloud Run](D:\secret\steamweb\docs\github-cicd-cloudrun.md)
 
 ---
 

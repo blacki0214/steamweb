@@ -37,7 +37,7 @@ import re
 import requests
 from dotenv import load_dotenv
 
-from ingestors.utils import db_cursor, rate_sleep
+from ingestors.utils import db_cursor, env_flag, env_int, rate_sleep
 
 load_dotenv()
 logger = logging.getLogger(__name__)
@@ -59,6 +59,9 @@ SUBREDDIT_FILTERS = [
 ]
 POSTS_PER_GAME = 10   # posts to fetch per game from sitewide search
 COMMENTS_PER_POST = 10  # top comments per post
+FREE_TIER_MODE = env_flag("FREE_TIER_MODE", default=False)
+POSTS_PER_GAME = env_int("REDDIT_POSTS_PER_GAME", 3 if FREE_TIER_MODE else POSTS_PER_GAME)
+COMMENTS_PER_POST = env_int("REDDIT_COMMENTS_PER_POST", 3 if FREE_TIER_MODE else COMMENTS_PER_POST)
 
 _oauth_token: str | None = None
 _oauth_expires_at: datetime | None = None
